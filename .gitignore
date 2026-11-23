@@ -1,0 +1,48 @@
+## Claude Code / AI tooling
+.claude/
+CLAUDE.md
+
+## .NET build output
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Ll]og/
+[Ll]ogs/
+artifacts/
+
+## Visual Studio / Rider / VS Code
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.rsuser
+*.DotSettings.user
+
+## Test results
+[Tt]est[Rr]esult*/
+coverage*.json
+coverage*.xml
+*.coverage
+*.trx
+
+## NuGet
+*.nupkg
+*.snupkg
+.nuget/
+packages/
+!packages/build/
+
+## Runtime upload store (user-generated sensor attachments)
+src/SmartX.Api/App_Data/
+uploads/
+
+## OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
+
+## Logs written by run-dev.sh
+.logs/

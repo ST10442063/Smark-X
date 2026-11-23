@@ -1,0 +1,199 @@
+@page "/sensors"
+@inject SmartXApiClient Api
+@inject NavigationManager Navigation
+@inject GatewayStatus Gateway
+
+<PageTitle>Sensors &middot; Smart-X Gateway</PageTitle>
+
+<div class="page-head">
+    <h1>Sensor registry</h1>
+    <p>
+        Every node known to the gateway, held in a list kept sorted by MAC address so the
+        lookup on the ingestion hot path is a binary search.
+    </p>
+</div>
+
+<div class="card">
+    <form @onsubmit="Search" style="display:flex; gap:var(--s3); align-items:flex-end; flex-wrap:wrap;">
+        <div class="field" style="flex:1 1 320px; margin-bottom:0;">
+            <label for="q">Find a node</label>
+            <input type="search" id="q" @bind="_draft" placeholder="Name, zone, category, or a MAC address" />
+            <span class="help">
+                A MAC address is answered by binary search over the sorted registry; anything
+                else has to scan, because the list is ordered on MAC alone.
+            </span>
+        </div>
+        <div class="field" style="margin-bottom:0;">
+            <button type="submit" class="btn btn-primary">Search</button>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(Q))
+        {
+            <div class="field" style="margin-bottom:0;">
+                <a class="btn btn-quiet" href="sensors">Clear</a>
+            </div>
+        }
+        <div class="field" style="margin-left:auto; margin-bottom:0;">
+            <a class="btn btn-primary" href="sensors/register">Register a node</a>
+        </div>
+    </form>
+
+    @if (!string.IsNullOrWhiteSpace(Q) && !_loading && _succeeded)
+    {
+        @* The search cost, shown rather than described. This is the difference
+           between O(log n) and O(n) made observable on real data. *@
+        <p style="margin:var(--s4) 0 0; color:var(--text-dim); font-size:0.82rem;">
+            @if (_strategy == "binary")
+            {
+                <text>
+                    Matched by <strong style="color:var(--accent)">binary search</strong>
+                    over the sorted registry &mdash; roughly log&#8322;(n) comparisons.
+                </text>
+            }
+            else
+            {
+                <text>
+                    Matched by <strong style="color:var(--text-muted)">linear scan</strong>,
+                    examining @_comparisons of @_totalRegistered registered nodes.
+                </text>
+            }
+        </p>
+    }
+</div>
+
+@if (_loading)
+{
+    <div class="card"><p class="loading-line">Loading the registry&hellip;</p></div>
+}
+else if (_sensors.Count == 0 && !Gateway.IsReachable)
+{
+    @* An unreachable gateway is not an empty one. Saying "nothing is registered"
+       here would tell the operator their fleet had vanished. *@
+    <div class="card">
+        <div class="empty">
+            <h3>Waiting for the gateway</h3>
+            <p>The registry will load as soon as the gateway answers.</p>
+        </div>
+    </div>
+}
+else if (_sensors.Count == 0)
+{
+    <div class="card">
+        <div class="empty">
+            <h3>No nodes matched</h3>
+            <p>
+                @(string.IsNullOrWhiteSpace(Q)
+                    ? "Nothing is registered with this gateway yet."
+                    : $"Nothing in the registry matches “{Q}”.")
+            </p>
+            <a class="btn btn-primary" href="sensors/register">Register a node</a>
+        </div>
+    </div>
+}
+else
+{
+    <div class="card">
+        <div class="card-head">
+            <h2>@_sensors.Count node@(_sensors.Count == 1 ? "" : "s")</h2>
+            <span class="hint">Ordered by MAC address &mdash; the registry sort invariant</span>
+        </div>
+
+        <div class="table-wrap">
+            <table>
+                <caption class="visually-hidden">Registered sensor nodes</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">Node</th>
+                        <th scope="col">MAC address</th>
+                        <th scope="col">Category</th>
+                        <th scope="col">Deployment path</th>
+                        <th scope="col">Status</th>
+                        <th scope="col" class="num">Latest</th>
+                        <th scope="col" class="num">Packets</th>
+                        <th scope="col"><span class="visually-hidden">Actions</span></th>
+                    </tr>
+                </thead>
+                <tbody>
+                @foreach (var sensor in _sensors)
+                {
+                    <tr @key="sensor.Id">
+                        <td>
+                            <a href="sensors/@sensor.Id">@sensor.DisplayName</a>
+                            @if (sensor.AttachmentCount > 0)
+                            {
+                                <span class="hint" title="@sensor.AttachmentCount attached file(s)">
+                                    &#128206; @sensor.AttachmentCount
+                                </span>
+                            }
+                        </td>
+                        <td class="mono" style="font-size:0.82rem;">@sensor.MacAddress</td>
+                        <td>@SensorVocabulary.DisplayName(sensor.Category)</td>
+                        <td style="color:var(--text-muted); font-size:0.84rem;">@sensor.QualifiedPath</td>
+                        <td>
+                            <span class="pill @Display.PillFor(sensor.Status)">
+                                <span class="dot" aria-hidden="true"></span>@sensor.Status
+                            </span>
+                        </td>
+                        <td class="num">@(sensor.LatestReading ?? "—")</td>
+                        <td class="num">@sensor.PacketsReceived.ToString("N0")</td>
+                        <td>
+                            <a class="btn btn-sm btn-quiet" href="sensors/@sensor.Id">Open</a>
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
+
+@code {
+    /// <summary>The search term, kept in the address bar so a filtered view can be bookmarked or shared.</summary>
+    [SupplyParameterFromQuery]
+    public string? Q { get; set; }
+
+    private string? _draft;
+    private List<SensorResponse> _sensors = [];
+    private bool _loading = true;
+    private bool _succeeded;
+    private string _strategy = "linear";
+    private int _comparisons;
+    private int _totalRegistered;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _draft = Q;
+        _loading = true;
+
+        if (Display.LooksLikeMacAddress(Q))
+        {
+            var byMac = await Api.GetSensorByMacAsync(Q!);
+
+            _sensors = byMac.Value is null ? [] : [byMac.Value];
+            _strategy = "binary";
+            _succeeded = !byMac.IsUnreachable;
+        }
+        else
+        {
+            var result = await Api.SearchSensorsAsync(Q);
+
+            _succeeded = result.Succeeded;
+            _sensors = result.Value?.Sensors ?? [];
+            _strategy = result.Value?.Strategy ?? "linear";
+            _comparisons = result.Value?.ComparisonsUsed ?? 0;
+            _totalRegistered = result.Value?.TotalRegistered ?? 0;
+        }
+
+        _loading = false;
+    }
+
+    private void Search()
+    {
+        // Navigating rather than searching in place, so the query lands in the URL
+        // and the browser back button returns to the previous result set.
+        var target = string.IsNullOrWhiteSpace(_draft)
+            ? "sensors"
+            : Navigation.GetUriWithQueryParameter("q", _draft.Trim());
+
+        Navigation.NavigateTo(target);
+    }
+}

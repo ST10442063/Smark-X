@@ -1,0 +1,469 @@
+@page "/dashboard"
+@implements IAsyncDisposable
+@inject SmartXApiClient Api
+@inject ToastService Toasts
+@inject IJSRuntime JS
+
+<PageTitle>Anomaly Radar &middot; Smart-X Gateway</PageTitle>
+
+<div class="page-head">
+    <h1>Anomaly Radar</h1>
+    <p>
+        Every node as a heartbeat strip, scored against its own recent behaviour. A bar
+        turns amber past two standard deviations and red past three; a strip goes flat and
+        grey when the node stops reporting at all. Ranked worst-first, so the thing worth
+        looking at is already at the top.
+    </p>
+</div>
+
+@* ---------------- Gateway vitals ---------------- *@
+<div class="card">
+    <div class="card-head">
+        <h2>Gateway vitals</h2>
+        <span class="hint">
+            <span style="color:@(_pollState == "Gateway unreachable" ? "var(--bad)" : "var(--text-dim)")">@_pollState</span>
+            &middot; refreshes every @PollInterval.TotalSeconds.ToString("0")s
+        </span>
+    </div>
+
+    <div style="display:flex; gap:var(--s6); align-items:center; flex-wrap:wrap;">
+        @* The score dial. A ring rather than a bar, because a bar reads as
+           "progress towards done" and this number moves in both directions. *@
+        <div style="position:relative; width:132px; height:132px; flex:none;">
+            <svg viewBox="0 0 120 120" width="132" height="132" role="img" aria-labelledby="scoreLabel">
+                <title id="scoreLabel">Gateway health score: @(_health?.Score ?? 0) out of 100</title>
+                <circle cx="60" cy="60" r="52" fill="none" stroke="var(--surface-3)" stroke-width="10" />
+                <circle cx="60" cy="60" r="52" fill="none"
+                        stroke-width="10" stroke-linecap="round"
+                        stroke-dasharray="@RingCircumference"
+                        transform="rotate(-90 60 60)"
+                        style="stroke:@TierColour; stroke-dashoffset:@Display.Css(RingCircumference * (1 - (_health?.Score ?? 0) / 100d));
+                               transition: stroke-dashoffset 0.4s ease, stroke 0.4s ease;" />
+            </svg>
+            <div style="position:absolute; inset:0; display:grid; place-items:center; text-align:center;">
+                <div>
+                    <div class="mono" style="font-size:2rem; font-weight:700; line-height:1;">@(_health?.Score ?? 0)</div>
+                    <div class="stat-label" style="color:@TierColour">@(_health?.Tier ?? "—")</div>
+                </div>
+            </div>
+        </div>
+
+        <div style="flex:1 1 300px; min-width:260px;">
+            <p style="margin-bottom:var(--s4); color:var(--text-muted);">
+                @(_health?.Headline ?? "Waiting for the gateway.")
+            </p>
+
+            <div class="grid grid-stats">
+                <div class="stat">
+                    <div class="stat-label">Reporting</div>
+                    <div class="stat-value">@(_stats?.OnlineSensors ?? 0)</div>
+                    <div class="stat-sub">of @(_stats?.RegisteredSensors ?? 0) nodes</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Silent</div>
+                    <div class="stat-value" style="color:@((_stats?.SilentSensors ?? 0) > 0 ? "var(--bad)" : "var(--ok)")">
+                        @(_stats?.SilentSensors ?? 0)
+                    </div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Open alerts</div>
+                    <div class="stat-value" style="color:@((_health?.OpenAnomalies ?? 0) > 0 ? "var(--warn)" : "var(--ok)")">
+                        @(_health?.OpenAnomalies ?? 0)
+                    </div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Clean streak</div>
+                    <div class="stat-value">@((_health?.CleanIngestStreak ?? 0).ToString("N0"))</div>
+                    <div class="stat-sub">readings without an alert</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    @* ---------------- Badges ---------------- *@
+    <div style="margin-top:var(--s5); padding-top:var(--s4); border-top:1px solid var(--border);">
+        <div class="stat-label" style="margin-bottom:var(--s3);">Operator badges</div>
+        <div class="grid grid-3">
+            @foreach (var badge in _health?.Badges ?? [])
+            {
+                <div @key="badge.Name" class="stat" style="border-color:@(badge.Earned ? "var(--ok)" : "var(--border)");">
+                    <div style="display:flex; align-items:center; gap:var(--s2);">
+                        <span aria-hidden="true" style="font-size:1.1rem;
+                              filter:@(badge.Earned ? "none" : "grayscale(1)");
+                              opacity:@(badge.Earned ? "1" : "0.5");">@badge.Icon</span>
+                        <strong style="font-size:0.88rem;">@badge.Name</strong>
+                        @if (badge.Earned)
+                        {
+                            <span class="pill pill-ok" style="margin-left:auto;">Earned</span>
+                        }
+                    </div>
+                    <div style="color:var(--text-dim); font-size:0.78rem; margin-top:var(--s1);">
+                        @badge.Description
+                    </div>
+                    <div style="height:4px; background:var(--surface-0); border-radius:2px; margin-top:var(--s2);">
+                        <div style="height:100%; border-radius:2px; width:@((badge.Progress * 100).ToString("0", CultureInfo.InvariantCulture))%;
+                                    background:@(badge.Earned ? "var(--ok)" : "var(--accent-dim)");
+                                    transition: width 0.4s ease;"></div>
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+<div class="grid grid-2">
+
+    @* ---------------- Heartbeat strips ---------------- *@
+    <div class="card">
+        <div class="card-head">
+            <h2>Heartbeat strips</h2>
+            <span class="hint">last @Display.StripLength readings per node</span>
+        </div>
+
+        @if (_strips.Count == 0)
+        {
+            <div class="empty">
+                <h3>@(_loaded ? "No nodes to watch" : "Tuning in…")</h3>
+                <p>Register a node and publish telemetry to populate the radar.</p>
+            </div>
+        }
+        else
+        {
+            @foreach (var strip in _strips)
+            {
+                <HeartbeatStrip @key="strip.SensorId" Strip="strip" />
+            }
+        }
+    </div>
+
+    @* ---------------- Triage queue ---------------- *@
+    <div class="card" style="align-self:start;">
+        <div class="card-head">
+            <h2>Triage queue</h2>
+            <span class="hint">worst first</span>
+        </div>
+
+        @if (_anomalies.Count == 0)
+        {
+            <div class="empty">
+                <h3>Nothing outstanding</h3>
+                <p>Every node is reporting inside its normal band.</p>
+            </div>
+        }
+        else
+        {
+            @foreach (var anomaly in _anomalies)
+            {
+                <AnomalyCard @key="anomaly.Id" Anomaly="anomaly"
+                             Busy="_acknowledging.Contains(anomaly.Id)"
+                             OnAcknowledge="AcknowledgeAsync" />
+            }
+        }
+    </div>
+</div>
+
+@* ---------------- Pipeline stats ---------------- *@
+<div class="card">
+    <div class="card-head">
+        <h2>Ingestion pipeline</h2>
+        <span class="hint">the data structures, measured</span>
+    </div>
+
+    <div class="grid grid-stats">
+        <div class="stat">
+            <div class="stat-label">Readings held</div>
+            <div class="stat-value">@((_stats?.TotalReadings ?? 0).ToString("N0"))</div>
+            <div class="stat-sub">@(_stats?.TotalBatches ?? 0) jagged batches</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Ring buffers</div>
+            <div class="stat-value" style="font-size:1.15rem;">
+                @(_stats?.BufferOccupancy ?? 0)/@(_stats?.BufferCapacity ?? 0)
+            </div>
+            <div class="stat-sub">live packets staged</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Overwritten</div>
+            <div class="stat-value">@((_stats?.BufferOverwritten ?? 0).ToString("N0"))</div>
+            <div class="stat-sub">back-pressure signal</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Aggregate draw</div>
+            <div class="stat-value" style="font-size:1.15rem;">@(_stats?.AggregatePowerDraw ?? "0")</div>
+            <div class="stat-sub">via overloaded +</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Attachments</div>
+            <div class="stat-value">@(_stats?.Attachments ?? 0)</div>
+            <div class="stat-sub">encrypted at rest</div>
+        </div>
+    </div>
+
+    @if (_stats is { HeatZones.Count: > 0 } stats)
+    {
+        <div style="margin-top:var(--s5);">
+            <div class="stat-label" style="margin-bottom:var(--s2);">
+                Zone by hour &mdash; environmental means, from the rectangular 2-D grid
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <caption class="visually-hidden">Mean environmental reading per zone per hour of day</caption>
+                    <thead>
+                        <tr>
+                            <th scope="col">Zone</th>
+                            @for (var hour = 0; hour < 24; hour++)
+                            {
+                                <th scope="col" class="num" style="padding:var(--s1);">@hour</th>
+                            }
+                        </tr>
+                    </thead>
+                    <tbody>
+                    @for (var row = 0; row < stats.HeatZones.Count && row < stats.HeatRows.Count; row++)
+                    {
+                        <tr>
+                            <th scope="row" style="font-size:0.8rem; white-space:nowrap;">@stats.HeatZones[row]</th>
+                            @foreach (var cell in stats.HeatRows[row])
+                            {
+                                <td class="num" style="padding:var(--s1); font-size:0.72rem;
+                                    background:@(cell is null ? "transparent" : $"rgba(52, 211, 192, {Display.Css(Math.Clamp(cell.Value / 100d, 0.06, 0.55))})");
+                                    color:@(cell is null ? "var(--text-dim)" : "var(--text)");"
+                                    title="@(cell is null ? "no readings in this hour" : cell.Value.ToString("0.#"))">
+                                    @(cell is null ? "·" : cell.Value.ToString("0"))
+                                </td>
+                            }
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+            <p style="color:var(--text-dim); font-size:0.78rem; margin-top:var(--s2);">
+                An empty cell is drawn as a dot rather than a zero, because no reading is
+                not the same as a reading of nothing.
+            </p>
+        </div>
+    }
+</div>
+
+@code {
+    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(3);
+    private const double RingCircumference = 327; // 2 * pi * r, with r = 52
+
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly HashSet<Guid> _acknowledging = [];
+
+    private GatewayHealthResponse? _health;
+    private DashboardStatsResponse? _stats;
+    private List<HeartbeatStripResponse> _strips = [];
+    private List<AnomalyResponse> _anomalies = [];
+    private bool _loaded;
+    private bool _visible = true;
+
+    // Bumped whenever the operator changes gateway state from this page. A refresh
+    // that was already in flight when that happened carries a snapshot from before
+    // the change, so it is discarded instead of putting an acknowledged anomaly back.
+    private int _stateVersion;
+    private string _pollState = "Connecting";
+
+    private DotNetObjectReference<Dashboard>? _selfReference;
+    private IJSObjectReference? _visibilityWatch;
+
+    private string TierColour => _health?.Tier switch
+    {
+        "Healthy" => "var(--ok)",
+        "Watch" or "Degraded" => "var(--warn)",
+        "Critical" => "var(--bad)",
+        _ => "var(--text-dim)"
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshAsync(announceChanges: false);
+        _ = PollAsync(_lifetime.Token);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _selfReference = DotNetObjectReference.Create(this);
+            _visibilityWatch = await JS.InvokeAsync<IJSObjectReference>("smartx.watchVisibility", _selfReference);
+        }
+    }
+
+    /// <summary>Called from site.js when the tab is shown or hidden.</summary>
+    [JSInvokable]
+    public async Task OnVisibilityChanged(bool visible)
+    {
+        _visible = visible;
+        _pollState = visible ? "Live" : "Paused";
+
+        if (visible)
+        {
+            // Catch up straight away rather than showing stale data for up to one interval.
+            await RefreshAsync(announceChanges: true);
+        }
+
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// The live loop. A PeriodicTimer rather than a System.Timers.Timer: it never
+    /// overlaps itself - if one refresh is slow, the next tick waits for it instead
+    /// of stacking a second concurrent request - and it stops cleanly when the page
+    /// is left, because the token is cancelled in DisposeAsync.
+    /// </summary>
+    private async Task PollAsync(CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(PollInterval);
+
+        try
+        {
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                if (!_visible)
+                {
+                    continue;
+                }
+
+                await RefreshAsync(announceChanges: true);
+
+                if (!cancellationToken.IsCancellationRequested)
+                {
+                    StateHasChanged();
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The operator navigated away. Nothing to clean up beyond the timer.
+        }
+    }
+
+    private async Task RefreshAsync(bool announceChanges)
+    {
+        var versionAtStart = _stateVersion;
+
+        // Four independent reads, issued together so each refresh costs one round
+        // trip of latency instead of four.
+        var healthTask = Api.GetGatewayHealthAsync(_lifetime.Token);
+        var stripsTask = Api.GetHeartbeatsAsync(_lifetime.Token);
+        var anomaliesTask = Api.GetAnomaliesAsync(25, _lifetime.Token);
+        var statsTask = Api.GetStatsAsync(_lifetime.Token);
+
+        await Task.WhenAll(healthTask, stripsTask, anomaliesTask, statsTask);
+
+        var health = await healthTask;
+        if (health.IsUnreachable)
+        {
+            _pollState = "Gateway unreachable";
+            return;
+        }
+
+        if (versionAtStart != _stateVersion)
+        {
+            // Stale: an acknowledgement landed while these reads were travelling.
+            // The next tick fetches a snapshot that includes it.
+            return;
+        }
+
+        _pollState = _visible ? "Live" : "Paused";
+
+        if (health.Value is { } next)
+        {
+            if (announceChanges)
+            {
+                AnnounceChanges(_health, next);
+            }
+
+            _health = next;
+        }
+
+        _strips = (await stripsTask).Value ?? _strips;
+        _anomalies = (await anomaliesTask).Value ?? _anomalies;
+        _stats = (await statsTask).Value ?? _stats;
+        _loaded = true;
+    }
+
+    /// <summary>
+    /// Tells the operator about changes that matter, and only those. A score that
+    /// drifts between 88 and 89 is noise; crossing from Watch into Degraded, or
+    /// earning a badge, is the thing worth interrupting for.
+    /// </summary>
+    private void AnnounceChanges(GatewayHealthResponse? previous, GatewayHealthResponse next)
+    {
+        if (previous is null)
+        {
+            return;
+        }
+
+        if (previous.Tier != next.Tier)
+        {
+            var message = $"Gateway health is now {next.Tier} ({next.Score}/100).";
+
+            if (next.Score < previous.Score)
+            {
+                Toasts.Error(message);
+            }
+            else
+            {
+                Toasts.Success(message);
+            }
+        }
+
+        var earnedBefore = previous.Badges.Where(badge => badge.Earned).Select(badge => badge.Name).ToHashSet();
+
+        foreach (var badge in next.Badges.Where(badge => badge.Earned && !earnedBefore.Contains(badge.Name)))
+        {
+            Toasts.Success($"Badge earned: {badge.Name}");
+        }
+    }
+
+    private async Task AcknowledgeAsync(AnomalyResponse anomaly)
+    {
+        if (!_acknowledging.Add(anomaly.Id))
+        {
+            return;
+        }
+
+        var result = await Api.AcknowledgeAnomalyAsync(anomaly.Id, _lifetime.Token);
+        _acknowledging.Remove(anomaly.Id);
+
+        if (!result.Succeeded)
+        {
+            Toasts.Error(result.IsUnreachable ? "Could not reach the gateway." : "That anomaly could not be cleared.");
+            return;
+        }
+
+        // Remove the row immediately rather than waiting for the next poll, so the
+        // click visibly did something.
+        _stateVersion++;
+        _anomalies.RemoveAll(item => item.Id == anomaly.Id);
+
+        AnnounceChanges(_health, result.Value!);
+        _health = result.Value;
+
+        Toasts.Success($"Acknowledged. Gateway health is now {_health!.Score}/100.");
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        // Cancelled but not disposed: an in-flight refresh may still read the token
+        // as it unwinds, and a disposed source would throw from under it.
+        await _lifetime.CancelAsync();
+
+        if (_visibilityWatch is not null)
+        {
+            try
+            {
+                await JS.InvokeVoidAsync("smartx.stopVisibility", _visibilityWatch);
+                await _visibilityWatch.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+                // The page is being torn down; the listener goes with it.
+            }
+        }
+
+        _selfReference?.Dispose();
+    }
+}

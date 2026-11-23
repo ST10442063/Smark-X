@@ -1,0 +1,280 @@
+@page "/"
+@inject SmartXApiClient Api
+
+<PageTitle>Overview &middot; Smart-X Gateway</PageTitle>
+
+<div class="page-head">
+    <h1>Smart-X IoT Mesh &mdash; Gateway Console</h1>
+    <p>
+        Telemetry from distributed ESP32 nodes across hydroponics bays, utility trackers
+        and smart-grid installations, received by a .NET gateway, streamed live to this
+        console, and answered with manual override commands. Choose an architectural
+        pillar to begin.
+    </p>
+</div>
+
+@if (_health is { } health)
+{
+    <div class="card" style="margin-bottom: var(--s5);">
+        <div class="card-head">
+            <h2>Gateway vitals</h2>
+            <span class="pill @Display.PillFor(health.Tier)">
+                <span class="dot" aria-hidden="true"></span>@health.Tier
+            </span>
+        </div>
+
+        <div class="grid grid-stats">
+            <div class="stat">
+                <div class="stat-label">Health score</div>
+                <div class="stat-value">@health.Score<span style="font-size:0.9rem;color:var(--text-dim)">/100</span></div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Registered</div>
+                <div class="stat-value">@(_stats?.RegisteredSensors ?? 0)</div>
+                <div class="stat-sub">@(_stats?.OnlineSensors ?? 0) reporting</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Readings held</div>
+                <div class="stat-value">@((_stats?.TotalReadings ?? 0).ToString("N0"))</div>
+                <div class="stat-sub">@(_stats?.TotalBatches ?? 0) batches</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Open alerts</div>
+                <div class="stat-value" style="color:@(health.OpenAnomalies > 0 ? "var(--warn)" : "var(--ok)")">
+                    @health.OpenAnomalies
+                </div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Silent nodes</div>
+                <div class="stat-value" style="color:@(health.SilentNodes > 0 ? "var(--bad)" : "var(--ok)")">
+                    @health.SilentNodes
+                </div>
+            </div>
+        </div>
+
+        <p style="margin: var(--s4) 0 0; color: var(--text-muted); font-size: 0.9rem;">
+            @health.Headline
+        </p>
+    </div>
+}
+else if (_loading)
+{
+    <div class="card" style="margin-bottom: var(--s5);">
+        <p class="loading-line">Reading gateway vitals&hellip;</p>
+    </div>
+}
+
+<h2>Architectural pillars</h2>
+
+<div class="grid grid-3" style="margin-top: var(--s4);">
+
+    @* Pillar 1 - the module this part of the PoE implements. *@
+    <article class="pillar is-active">
+        <span class="pillar-index">PILLAR 01</span>
+        <h3>Sensor Data Ingestion and Telemetry</h3>
+        <p>
+            Register mesh nodes, publish single and batched telemetry through the ingestion
+            API, attach encrypted device configuration files and field photos, and watch the
+            Anomaly Radar pick out spikes and dropouts as they arrive.
+        </p>
+        <div class="pillar-foot">
+            <a class="btn btn-primary" href="sensors">Open ingestion</a>
+            <a class="btn btn-quiet" href="dashboard">Anomaly Radar</a>
+        </div>
+    </article>
+
+    @* Pillar 2 - the module this part of the PoE implements. *@
+    <article class="pillar is-active">
+        <span class="pillar-index">PILLAR 02</span>
+        <h3>Real-Time Command Stream and History</h3>
+        <p>
+            Watch the mesh live over SignalR, switch pumps and relays with a stack-backed
+            undo, find devices by category or alert state, and act on the predictive
+            engine's Suggested Actions before you have to go looking.
+        </p>
+        <div class="pillar-foot">
+            <a class="btn btn-primary" href="stream">Open command stream</a>
+            <a class="btn btn-quiet" href="stream/history">History &amp; patterns</a>
+        </div>
+    </article>
+
+    @* Pillar 3 - the module the final PoE implements. *@
+    <article class="pillar is-active">
+        <span class="pillar-index">PILLAR 03</span>
+        <h3>Network Topology and Mesh Routing</h3>
+        <p>
+            See the mesh as a graph on its site plan, trace any node's route to the gateway by
+            MAC, fail a relay and watch the minimum spanning tree heal around it, and query
+            any sensor's history by time window from an AVL tree.
+        </p>
+        <div class="pillar-foot">
+            <a class="btn btn-primary" href="topology">Open mesh map</a>
+            <a class="btn btn-quiet" href="topology/history">Telemetry history</a>
+        </div>
+    </article>
+</div>
+
+<div class="card" style="margin-top: var(--s5);">
+    <div class="card-head">
+        <h2>What the final PoE adds</h2>
+        <span class="hint">Network Topology and Mesh Routing</span>
+    </div>
+
+    <div class="grid grid-2">
+        <div>
+            <h3>An AVL tree for history</h3>
+            <p style="color: var(--text-muted); font-size: 0.9rem;">
+                Every reading is also kept in a self-balancing AVL tree keyed by timestamp. A
+                window such as 14:00&ndash;16:00 is found by descending the tree, and its count,
+                minimum, maximum and mean come from subtree aggregates in O(log n).
+            </p>
+
+            <h3>The mesh as a graph</h3>
+            <p style="color: var(--text-muted); font-size: 0.9rem;">
+                Nodes are vertices on an adjacency list; links are edges weighted by ETX,
+                the expected transmissions per packet, derived from a path-loss radio model
+                and refined by the devices' own neighbour reports.
+            </p>
+        </div>
+        <div>
+            <h3>Breadth- and depth-first search</h3>
+            <p style="color: var(--text-muted); font-size: 0.9rem;">
+                BFS from the gateway gives every node's hop count and separates stranded nodes
+                from down ones. DFS lists the subnet behind a relay and finds the articulation
+                points whose loss would split the mesh.
+            </p>
+
+            <h3>Prim and Kruskal, on a hand-written heap</h3>
+            <p style="color: var(--text-muted); font-size: 0.9rem;">
+                The minimum spanning tree is the most power-efficient backbone: Prim grows it from
+                the gateway on an indexed min-heap with decrease-key, and Kruskal cross-checks it
+                with union-find.
+            </p>
+        </div>
+    </div>
+</div>
+
+<div class="card" style="margin-top: var(--s4);">
+    <div class="card-head">
+        <h2>What Part 2 adds</h2>
+        <span class="hint">Real-Time Command Stream and Device Management</span>
+    </div>
+
+    <div class="grid grid-2">
+        <div>
+            <h3>Queues and a priority heap</h3>
+            <p style="color: var(--text-muted); font-size: 0.9rem;">
+                Every packet from the device emulator enters a <code>Queue&lt;T&gt;</code>, first in first
+                out. Triage at the door sends critical readings to a <code>PriorityQueue</code> instead,
+                which the dispatch worker always drains first &mdash; the console shows how many
+                packets each alert overtook.
+            </p>
+
+            <h3>Stack-backed undo</h3>
+            <p style="color: var(--text-muted); font-size: 0.9rem;">
+                Each override is pushed onto a <code>Stack&lt;T&gt;</code> with every target's previous
+                state, so one undo reverts "shut down all valves" exactly, and a second stack
+                holds redo.
+            </p>
+
+            <h3>Sets for unique state</h3>
+            <p style="color: var(--text-muted); font-size: 0.9rem;">
+                Active alerts and disconnected nodes live in <code>HashSet&lt;T&gt;</code>s, so a node
+                that stays offline is reported once and every repeat is counted, not shown.
+            </p>
+        </div>
+        <div>
+            <h3>Dictionaries, plain and sorted</h3>
+            <p style="color: var(--text-muted); font-size: 0.9rem;">
+                Live devices sit in a <code>Dictionary</code> keyed by a 48-bit MAC for O(1) lookup on
+                every packet. Timelines and the event history are <code>SortedDictionary</code>s by
+                timestamp, so late packets slot into place and graphs never need sorting.
+            </p>
+
+            <h3>Predictive action engine</h3>
+            <p style="color: var(--text-muted); font-size: 0.9rem;">
+                A windowed pattern miner learns what you do after each alert &mdash; search
+                "Pump A" after Moisture Probe 01 drops, then switch it on &mdash; and offers that
+                action the next time, with its confidence and the evidence behind it.
+            </p>
+
+            <h3>A device emulator over HTTP</h3>
+            <p style="color: var(--text-muted); font-size: 0.9rem;">
+                A separate virtual ESP32 fleet publishes to the uplink, collects commands from
+                the downlink and acknowledges them, exactly as hardware would.
+            </p>
+        </div>
+    </div>
+</div>
+
+<div class="card" style="margin-top: var(--s4);">
+    <div class="card-head">
+        <h2>Carried over from Part 1</h2>
+        <span class="hint">Data Ingestion and Validation Gateway</span>
+    </div>
+
+    <div class="grid grid-2">
+        <div>
+            <h3>Generics</h3>
+            <p style="color: var(--text-muted); font-size: 0.9rem;">
+                <code>TelemetryPacket&lt;T&gt;</code> carries a float, an int or a bool through
+                one pipeline with the payload in a strongly-typed field, so nothing is boxed
+                on the way in or cast on the way out.
+            </p>
+
+            <h3>Operator overloading</h3>
+            <p style="color: var(--text-muted); font-size: 0.9rem;">
+                Readings aggregate with <code>+</code> and delta with <code>-</code>, carrying
+                their unit, so combining watts with degrees Celsius is refused rather than
+                silently computed.
+            </p>
+
+            <h3>Encrypted attachments</h3>
+            <p style="color: var(--text-muted); font-size: 0.9rem;">
+                Uploaded configs and logs are streamed through AES-256-GCM in 64 KB chunks,
+                so they are never on disk in the clear and a tampered file refuses to decrypt.
+            </p>
+        </div>
+        <div>
+            <h3>Advanced arrays</h3>
+            <p style="color: var(--text-muted); font-size: 0.9rem;">
+                Historical batches live in a jagged <code>double[][]</code> sized to each batch,
+                and zone averages in a rectangular <code>double[,]</code> where the shape never
+                varies. Both flush into <code>List&lt;T&gt;</code> for querying.
+            </p>
+
+            <h3>Recursion</h3>
+            <p style="color: var(--text-muted); font-size: 0.9rem;">
+                Deployment profiles are validated by recursive descent, confirming a node sits
+                safely within Sub-Zone B, inside Zone 1, inside Facility A &mdash; with depth
+                and cycle guards so a malformed profile cannot exhaust the stack.
+            </p>
+
+            <h3>Blazor WebAssembly client</h3>
+            <p style="color: var(--text-muted); font-size: 0.9rem;">
+                This console is C# compiled to WebAssembly. It shares only the request and
+                response contracts with the .NET 10 API and reaches the gateway exclusively
+                over asynchronous HTTP.
+            </p>
+        </div>
+    </div>
+</div>
+
+@code {
+    private GatewayHealthResponse? _health;
+    private DashboardStatsResponse? _stats;
+    private bool _loading = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Two independent reads, issued together so the page waits on one round
+        // trip of latency rather than two.
+        var statsTask = Api.GetStatsAsync();
+        var healthTask = Api.GetGatewayHealthAsync();
+        await Task.WhenAll(statsTask, healthTask);
+
+        _stats = (await statsTask).Value;
+        _health = (await healthTask).Value;
+        _loading = false;
+    }
+}

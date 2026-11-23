@@ -1,0 +1,88 @@
+@* The predictive engine's output. Every suggestion carries its evidence - how often
+   the pattern has held and how many times it has been seen - so the operator can
+   judge it rather than trust it blindly. *@
+
+<div class="card-head">
+    <h2>Suggested actions</h2>
+    <span class="hint" title="Rules the engine trusts, learned from this many alerts, searches and commands">
+        @Insights.PatternsLearned patterns &middot; @Insights.EventsObserved.ToString("N0") events
+    </span>
+</div>
+
+@if (Insights.Actions.Count == 0)
+{
+    <p class="loading-line" style="margin-bottom:var(--s4);">
+        Nothing to suggest right now. When an alert fires that you have responded to before,
+        the response you usually make appears here.
+    </p>
+}
+else
+{
+    <ul class="suggestions">
+        @foreach (var suggestion in Insights.Actions)
+        {
+            <li @key="suggestion.Key" class="suggestion suggestion-action">
+                <div class="suggestion-title">@suggestion.Title</div>
+                <p class="suggestion-reason">@suggestion.Reason</p>
+                <div class="suggestion-foot">
+                    <Confidence Value="suggestion.Confidence" Support="suggestion.Support" />
+                    <button type="button" class="btn btn-sm btn-primary" disabled="@Busy.Contains(suggestion.Key)"
+                            @onclick="() => OnAccept.InvokeAsync(suggestion)">Run</button>
+                    <button type="button" class="btn btn-sm btn-quiet" disabled="@Busy.Contains(suggestion.Key)"
+                            @onclick="() => OnDismiss.InvokeAsync(suggestion)">Dismiss</button>
+                </div>
+            </li>
+        }
+    </ul>
+}
+
+<div class="card-head" style="margin-top:var(--s4);">
+    <h3>Automated insights</h3>
+</div>
+
+@if (Insights.Insights.Count == 0)
+{
+    <p class="loading-line">No devices need a closer look.</p>
+}
+else
+{
+    <ul class="suggestions">
+        @foreach (var insight in Insights.Insights)
+        {
+            <li @key="insight.Key" class="suggestion">
+                <div class="suggestion-title">
+                    @insight.Title
+                    <span class="pill pill-neutral">@insight.Source</span>
+                </div>
+                <p class="suggestion-reason">@insight.Reason</p>
+                <div class="suggestion-foot">
+                    @if (insight.Confidence is not null)
+                    {
+                        <Confidence Value="insight.Confidence" Support="insight.Support" />
+                    }
+                    @if (insight.MacAddress is not null)
+                    {
+                        <button type="button" class="btn btn-sm" @onclick="() => OnInspect.InvokeAsync(insight)">Inspect</button>
+                    }
+                    <button type="button" class="btn btn-sm btn-quiet" disabled="@Busy.Contains(insight.Key)"
+                            @onclick="() => OnDismiss.InvokeAsync(insight)">Dismiss</button>
+                </div>
+            </li>
+        }
+    </ul>
+}
+
+@code {
+    [Parameter, EditorRequired] public InsightsResponse Insights { get; set; } = default!;
+
+    /// <summary>Run an action.</summary>
+    [Parameter] public EventCallback<SuggestionResponse> OnAccept { get; set; }
+
+    [Parameter] public EventCallback<SuggestionResponse> OnDismiss { get; set; }
+
+    /// <summary>Open the device an insight points at.</summary>
+    [Parameter] public EventCallback<SuggestionResponse> OnInspect { get; set; }
+
+    /// <summary>Keys with a request in flight.</summary>
+    [Parameter] public IReadOnlySet<string> Busy { get; set; } = new HashSet<string>();
+}

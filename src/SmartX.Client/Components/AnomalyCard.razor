@@ -1,0 +1,64 @@
+@* One entry in the radar's triage queue. *@
+
+@{
+    var critical = Anomaly.Severity == "Critical";
+    var accent = critical ? "var(--bad)" : "var(--warn)";
+    var kindIcon = Anomaly.Kind switch
+    {
+        "Spike" => "▲",
+        "Drop" => "▼",
+        _ => "⚡"
+    };
+}
+
+<div class="anomaly"
+     style="padding:var(--s3); border:1px solid var(--border); border-radius:var(--radius-sm);
+            margin-bottom:var(--s3); border-left:3px solid @accent;">
+
+    <div style="display:flex; align-items:baseline; gap:var(--s2); flex-wrap:wrap;">
+        <span aria-hidden="true" style="color:@accent">@kindIcon</span>
+
+        <a href="sensors/@Anomaly.SensorId" style="font-weight:600; font-size:0.9rem;">@Anomaly.DisplayName</a>
+
+        <span class="pill @(critical ? "pill-critical" : "pill-warning")">@Anomaly.Severity</span>
+        <span class="pill pill-neutral">@Anomaly.Kind</span>
+
+        <span class="mono" style="margin-left:auto; font-size:0.82rem;">@Anomaly.Reading</span>
+    </div>
+
+    <p style="color:var(--text-muted); font-size:0.84rem; margin:var(--s2) 0;">
+        @Anomaly.Explanation
+    </p>
+
+    <div style="display:flex; align-items:center; gap:var(--s3); flex-wrap:wrap;">
+        <span style="color:var(--text-dim); font-size:0.76rem;">
+            @Anomaly.QualifiedPath &middot; @Display.Local(Anomaly.DetectedAtUtc)
+            @if (Anomaly.Kind != "Disconnect")
+            {
+                <text>&middot; z = @Anomaly.ZScore.ToString("0.0")</text>
+            }
+        </span>
+
+        @* Acknowledging is what lifts the health score, which is the loop the
+           engagement layer is built around: the number only improves when the
+           operator has actually dealt with something. *@
+        <button type="button" class="btn btn-sm btn-quiet" style="margin-left:auto;"
+                disabled="@Busy" @onclick="() => OnAcknowledge.InvokeAsync(Anomaly)">
+            @(Busy ? "Clearing…" : "Acknowledge")
+        </button>
+    </div>
+</div>
+
+@code {
+    /// <summary>The anomaly to show.</summary>
+    [Parameter, EditorRequired]
+    public AnomalyResponse Anomaly { get; set; } = default!;
+
+    /// <summary>Whether an acknowledgement for this anomaly is in flight.</summary>
+    [Parameter]
+    public bool Busy { get; set; }
+
+    /// <summary>Raised when the operator acknowledges it.</summary>
+    [Parameter]
+    public EventCallback<AnomalyResponse> OnAcknowledge { get; set; }
+}

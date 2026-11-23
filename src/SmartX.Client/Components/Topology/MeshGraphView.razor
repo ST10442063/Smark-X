@@ -1,0 +1,222 @@
+@*
+    The mesh drawn on its site plan. Inline SVG built in C#, like every other chart
+    in the console: node positions come from the gateway in metres, and are scaled
+    here to a fixed drawing so the map is identical on every screen and scales with
+    the card. North is up, so the y axis is flipped.
+
+    Drawing order matters: facilities, then every link, then the spanning tree over
+    them, then the traced route over that, and the nodes last so they are always
+    clickable.
+*@
+
+@if (Snapshot is null)
+{
+    <p class="loading-line">Drawing the mesh&hellip;</p>
+}
+else
+{
+    <svg class="topo-map" viewBox="0 0 @Display.Css(W) @Display.Css(H)" role="img"
+         aria-label="Mesh network map: @Snapshot.Nodes.Count nodes, @Snapshot.Links.Count links">
+
+        @foreach (var area in Snapshot.Areas)
+        {
+            <g>
+                <rect class="topo-area" x="@Display.Css(Px(area.X))" y="@Display.Css(Py(area.Y + area.Height))"
+                      width="@Display.Css(area.Width * Scale)" height="@Display.Css(area.Height * Scale)" rx="10" />
+                <text class="topo-area-label" x="@Display.Css(Px(area.X) + 10)" y="@Display.Css(Py(area.Y + area.Height) + 20)">@area.Name</text>
+            </g>
+        }
+
+        @* Down links are always drawn, dashed, so a failure stays visible in tree-only view. *@
+        @foreach (var link in Snapshot.Links.Where(link => !link.InTree && !OnRoute(link) && (ShowAllLinks || !link.IsLive)))
+        {
+            <line class="topo-link @(link.IsLive ? null : "is-dead")" @key="LinkKey(link)"
+                  x1="@X(link.A)" y1="@Y(link.A)" x2="@X(link.B)" y2="@Y(link.B)">
+                <title>@LinkTitle(link)</title>
+            </line>
+        }
+
+        @foreach (var link in Snapshot.Links.Where(link => link.InTree && !OnRoute(link)))
+        {
+            <line class="topo-tree" @key="LinkKey(link)" style="stroke-width:@Display.Css(TreeWidth(link))"
+                  x1="@X(link.A)" y1="@Y(link.A)" x2="@X(link.B)" y2="@Y(link.B)">
+                <title>@LinkTitle(link) &middot; in the spanning tree</title>
+            </line>
+        }
+
+        @foreach (var link in Snapshot.Links.Where(OnRoute))
+        {
+            <line class="topo-route" @key="LinkKey(link)"
+                  x1="@X(link.A)" y1="@Y(link.A)" x2="@X(link.B)" y2="@Y(link.B)">
+                <title>@LinkTitle(link) &middot; on the traced route</title>
+            </line>
+        }
+
+        @foreach (var node in Snapshot.Nodes)
+        {
+            var x = Px(node.X);
+            var y = Py(node.Y);
+            var selected = string.Equals(node.Mac, SelectedMac, StringComparison.OrdinalIgnoreCase);
+
+            <g @key="node.Mac" class="topo-node @StatusClass(node) @(selected ? "is-selected" : null)"
+               tabindex="0" role="button" aria-label="@node.Name, @node.Status"
+               @onclick="() => OnSelect.InvokeAsync(node.Mac)"
+               @onkeydown="e => OnKey(e, node.Mac)">
+                <title>@NodeTitle(node)</title>
+
+                @if (selected)
+                {
+                    <circle class="topo-halo" cx="@Display.Css(x)" cy="@Display.Css(y)" r="22" />
+                }
+
+                @if (node.IsCriticalRelay)
+                {
+                    <circle class="topo-relay" cx="@Display.Css(x)" cy="@Display.Css(y)" r="16" />
+                }
+
+                @if (node.IsStranded)
+                {
+                    <circle class="topo-stranded" cx="@Display.Css(x)" cy="@Display.Css(y)" r="16" />
+                }
+
+                @if (node.IsGateway)
+                {
+                    <rect class="topo-dot" x="@Display.Css(x - 13)" y="@Display.Css(y - 13)" width="26" height="26" rx="5" />
+                    <g><text class="topo-glyph" x="@Display.Css(x)" y="@Display.Css(y + 5)">GW</text></g>
+                }
+                else
+                {
+                    <circle class="topo-dot" cx="@Display.Css(x)" cy="@Display.Css(y)" r="10" />
+                    @if (!node.IsUp)
+                    {
+                        <g>
+                            <line class="topo-cross" x1="@Display.Css(x - 5)" y1="@Display.Css(y - 5)" x2="@Display.Css(x + 5)" y2="@Display.Css(y + 5)" />
+                            <line class="topo-cross" x1="@Display.Css(x + 5)" y1="@Display.Css(y - 5)" x2="@Display.Css(x - 5)" y2="@Display.Css(y + 5)" />
+                        </g>
+                    }
+                }
+
+                @if (ShowLabels || selected || node.IsGateway)
+                {
+                    <g><text class="topo-label" x="@Display.Css(x)" y="@Display.Css(y + (node.IsGateway ? 30 : 26))">@ShortName(node)</text></g>
+                }
+            </g>
+        }
+    </svg>
+}
+
+@code {
+    /// <summary>Pixels per metre.</summary>
+    private const double Scale = 4;
+
+    /// <summary>Margin round the site plan, in pixels.</summary>
+    private const double Pad = 24;
+
+    [Parameter, EditorRequired] public TopologySnapshotResponse? Snapshot { get; set; }
+
+    [Parameter] public string? SelectedMac { get; set; }
+
+    /// <summary>The traced route, node by node from the selected node to the gateway.</summary>
+    [Parameter] public IReadOnlyList<string> Route { get; set; } = [];
+
+    [Parameter] public bool ShowAllLinks { get; set; } = true;
+
+    [Parameter] public bool ShowLabels { get; set; } = true;
+
+    [Parameter] public EventCallback<string> OnSelect { get; set; }
+
+    private Dictionary<string, TopologyNodeResponse> _byMac = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<string> _routeLinks = new(StringComparer.OrdinalIgnoreCase);
+
+    private double W => ((Snapshot?.Width ?? 250) * Scale) + (2 * Pad);
+
+    private double H => ((Snapshot?.Height ?? 100) * Scale) + (2 * Pad);
+
+    protected override void OnParametersSet()
+    {
+        _byMac = Snapshot?.Nodes.ToDictionary(node => node.Mac, StringComparer.OrdinalIgnoreCase)
+                 ?? new(StringComparer.OrdinalIgnoreCase);
+
+        _routeLinks = new(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i + 1 < Route.Count; i++)
+        {
+            _routeLinks.Add(Key(Route[i], Route[i + 1]));
+        }
+    }
+
+    private double Px(double metres) => Pad + (metres * Scale);
+
+    private double Py(double metres) => Pad + (((Snapshot?.Height ?? 100) - metres) * Scale);
+
+    private string X(string mac) => Display.Css(_byMac.TryGetValue(mac, out var node) ? Px(node.X) : 0);
+
+    private string Y(string mac) => Display.Css(_byMac.TryGetValue(mac, out var node) ? Py(node.Y) : 0);
+
+    private bool OnRoute(TopologyLinkResponse link) => _routeLinks.Contains(Key(link.A, link.B));
+
+    private static string LinkKey(TopologyLinkResponse link) => Key(link.A, link.B);
+
+    private static string Key(string a, string b)
+        => string.CompareOrdinal(a, b) < 0 ? $"{a}|{b}" : $"{b}|{a}";
+
+    /// <summary>Thicker tree links for stronger signal, so weak hops stand out at a glance.</summary>
+    private static double TreeWidth(TopologyLinkResponse link) => link.Cost switch
+    {
+        < 1.1 => 4,
+        < 1.6 => 3,
+        < 2.5 => 2.2,
+        _ => 1.6
+    };
+
+    private string LinkTitle(TopologyLinkResponse link)
+        => $"{Name(link.A)} ↔ {Name(link.B)} · {link.RssiDbm:0.#} dBm · ETX {link.Cost:0.00} · {link.DistanceMetres:0} m"
+           + (link.Reports > 0 ? $" · {link.Reports} neighbour reports" : " · surveyed");
+
+    private static string NodeTitle(TopologyNodeResponse node)
+    {
+        var lines = new List<string> { $"{node.Name} ({node.Mac})", node.Status };
+
+        if (node.Hops is { } hops)
+        {
+            lines.Add($"{hops} hop{(hops == 1 ? "" : "s")} by BFS · depth {node.TreeDepth} in the tree · path ETX {node.PathCost:0.00}");
+        }
+
+        if (node.IsCriticalRelay)
+        {
+            lines.Add("Critical relay: losing it would split the mesh");
+        }
+
+        if (node.IsStranded)
+        {
+            lines.Add("Stranded: up, but no route to the gateway");
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    private string Name(string mac) => _byMac.TryGetValue(mac, out var node) ? node.Name : mac;
+
+    private static string StatusClass(TopologyNodeResponse node) => node.Status switch
+    {
+        "Gateway" => "is-gateway",
+        "Online" => "is-online",
+        "Degraded" => "is-degraded",
+        "SimulatedFailure" => "is-simulated",
+        _ => "is-down"
+    };
+
+    /// <summary>"Mesh Repeater 08" becomes "Repeater 08"; short enough to sit under a dot.</summary>
+    private static string ShortName(TopologyNodeResponse node)
+    {
+        if (node.IsGateway)
+        {
+            return "Gateway";
+        }
+
+        var words = node.Name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return words.Length > 2 ? string.Join(' ', words[^2..]) : node.Name;
+    }
+
+    private Task OnKey(KeyboardEventArgs e, string mac)
+        => e.Key is "Enter" or " " ? OnSelect.InvokeAsync(mac) : Task.CompletedTask;
+}

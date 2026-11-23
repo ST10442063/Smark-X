@@ -1,0 +1,296 @@
+@inherits LayoutComponentBase
+@implements IDisposable
+@inject GatewayStatus Gateway
+@inject ToastService Toasts
+@inject SmartXApiClient Api
+@inject StreamConnection Stream
+@inject NavigationManager Navigation
+
+<a class="skip-link" href="#main">Skip to main content</a>
+
+<header class="topbar">
+    <div class="topbar-inner">
+        <a class="brand" href="">
+            <span class="brand-mark" aria-hidden="true">&#9679;</span>
+            Smart-X Gateway
+        </a>
+
+        @* The three architectural pillars are the top level of the menu, and each
+           pillar's own pages sit in the row beneath. NavLink sets "active" from the
+           route, so the highlight follows client-side navigation with no reload. *@
+        <nav class="nav pillar-nav" aria-label="Pillars">
+            <NavLink href="" Match="NavLinkMatch.All">Overview</NavLink>
+            <a href="sensors" class="@(_section == Section.Ingestion ? "active" : null)">Ingestion &amp; Telemetry</a>
+            <a href="stream" class="@(_section == Section.Stream ? "active" : null)">
+                Command Stream
+                @if (Stream.UnseenCritical > 0 && _section != Section.Stream)
+                {
+                    <span class="nav-badge" title="@Stream.UnseenCritical new critical alert(s)">@Stream.UnseenCritical</span>
+                }
+            </a>
+            <a href="topology" class="@(_section == Section.Topology ? "active" : null)">Network Topology</a>
+        </nav>
+
+        @* The console's live link to the gateway, visible from every page. *@
+        <span class="live-chip live-@Stream.State.ToString().ToLowerInvariant()" role="status"
+              title="@LiveTitle">
+            <span class="dot" aria-hidden="true"></span>@LiveLabel
+        </span>
+    </div>
+
+    @if (_section is Section.Ingestion or Section.Stream or Section.Topology)
+    {
+        <div class="subnav">
+            <nav class="subnav-inner" aria-label="@SubnavLabel">
+                @if (_section == Section.Topology)
+                {
+                    <NavLink href="topology" Match="NavLinkMatch.All">Mesh map &amp; routing</NavLink>
+                    <NavLink href="topology/history">Telemetry history</NavLink>
+                }
+                else if (_section == Section.Stream)
+                {
+                    <NavLink href="stream" Match="NavLinkMatch.All">Live stream</NavLink>
+                    <NavLink href="stream/history">History &amp; patterns</NavLink>
+                }
+                else
+                {
+                    <NavLink href="sensors" Match="NavLinkMatch.All">Sensors</NavLink>
+                    <NavLink href="sensors/register">Register</NavLink>
+                    <NavLink href="telemetry">Telemetry</NavLink>
+                    <NavLink href="dashboard">Anomaly Radar</NavLink>
+                    <NavLink href="deployment">Deployment</NavLink>
+                }
+            </nav>
+        </div>
+    }
+</header>
+
+<main class="shell" id="main">
+    @if (!Gateway.IsReachable)
+    {
+        @* Shown in place of failing the page, so an operator sees why it is empty.
+           ReconnectAsync below clears it, and reloads the page, once the gateway is back. *@
+        <div class="banner banner-bad" role="alert">
+            <span aria-hidden="true">&#9888;</span>
+            <span>
+                <strong>The Smart-X gateway is not responding.</strong>
+                Start the API with <code>dotnet run --project src/SmartX.Api</code>.
+                Checking again every @ReconnectInterval.TotalSeconds.ToString("0") seconds &mdash;
+                this page reloads its data by itself once the gateway answers.
+            </span>
+        </div>
+    }
+
+    <ErrorBoundary @ref="_errorBoundary">
+        <ChildContent>
+            @* Changing this key throws the current page away and builds it again, which
+               re-runs its OnInitializedAsync - the only reliable way to make every page,
+               whichever lifecycle method loads its data, fetch afresh after a reconnect. *@
+            <div @key="_pageGeneration" style="display:contents">
+                @Body
+            </div>
+        </ChildContent>
+        <ErrorContent Context="error">
+            <div class="banner banner-bad" role="alert">
+                <span aria-hidden="true">&#9888;</span>
+                <span>
+                    <strong>This page hit an unexpected error.</strong>
+                    @error.Message
+                </span>
+            </div>
+        </ErrorContent>
+    </ErrorBoundary>
+
+    <footer class="foot">
+        <span>Smart-X IoT Mesh &middot; Ingestion, Command Stream and Mesh Routing &middot; Final PoE</span>
+        <span>PROG7312 Portfolio of Evidence &middot; ST10442063</span>
+    </footer>
+</main>
+
+<div class="toast-stack" aria-live="polite" aria-atomic="false">
+    @foreach (var toast in Toasts.Current)
+    {
+        <div @key="toast.Id" class="toast @(toast.IsError ? "toast-bad" : "toast-ok")"
+             role="@(toast.IsError ? "alert" : "status")">
+            @toast.Message
+        </div>
+    }
+</div>
+
+@code {
+    private static readonly TimeSpan ReconnectInterval = TimeSpan.FromSeconds(3);
+
+    private readonly CancellationTokenSource _lifetime = new();
+    private ErrorBoundary? _errorBoundary;
+    private bool _reconnecting;
+    private int _pageGeneration;
+    private Section _section;
+
+    private enum Section
+    {
+        Overview,
+        Ingestion,
+        Stream,
+        Topology,
+        Other
+    }
+
+    private string SubnavLabel => _section switch
+    {
+        Section.Stream => "Command stream",
+        Section.Topology => "Network topology",
+        _ => "Ingestion and telemetry"
+    };
+
+    private string LiveLabel => Stream.State switch
+    {
+        StreamLinkState.Live => Stream.LatestQueue is { } queue ? $"Live · {queue.ThroughputPerSecond:0.#} pkt/s" : "Live",
+        StreamLinkState.Reconnecting => "Reconnecting",
+        StreamLinkState.Offline => "Stream offline",
+        _ => "Connecting"
+    };
+
+    private string LiveTitle => Stream.State == StreamLinkState.Live
+        ? "SignalR push from the gateway is live."
+        : "The live push link is down; it reconnects by itself.";
+
+    protected override void OnInitialized()
+    {
+        Gateway.Changed += OnGatewayChanged;
+        Toasts.Changed += Refresh;
+
+        Navigation.LocationChanged += OnLocationChanged;
+        Stream.StateChanged += Refresh;
+        Stream.QueueStats += OnQueueStats;
+        Stream.CriticalAlert += OnCriticalAlert;
+        Stream.EventsLogged += OnEventsLogged;
+
+        UpdateSection();
+
+        // Opened once for the life of the tab; every page shares it.
+        _ = Stream.StartAsync();
+    }
+
+    private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
+    {
+        UpdateSection();
+        Refresh();
+    }
+
+    private void UpdateSection()
+    {
+        var path = Navigation.ToBaseRelativePath(Navigation.Uri).Split('?', '#')[0];
+        var first = path.Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty;
+
+        _section = first switch
+        {
+            "" => Section.Overview,
+            "sensors" or "telemetry" or "dashboard" or "deployment" => Section.Ingestion,
+            "stream" => Section.Stream,
+            "topology" => Section.Topology,
+            _ => Section.Other
+        };
+
+        if (_section == Section.Stream)
+        {
+            Stream.ClearUnseen();
+        }
+    }
+
+    // The chip shows throughput, so it follows the queue stats - which arrive at most
+    // once a second, so this costs nothing like a redraw per packet.
+    private void OnQueueStats(QueueStatsResponse stats) => Refresh();
+
+    /// <summary>
+    /// A critical alert is announced wherever the operator is. On the Command Stream
+    /// page itself the page pins it, so a toast there would only repeat it.
+    /// </summary>
+    private void OnCriticalAlert(CriticalAlertResponse alert)
+    {
+        if (_section != Section.Stream)
+        {
+            Toasts.Error($"Critical - {alert.DisplayName}: {alert.Reason}. Open the Command Stream to respond.");
+        }
+
+        Refresh();
+    }
+
+    private void OnEventsLogged(List<StreamEventResponse> events)
+    {
+        if (_section == Section.Stream)
+        {
+            return;
+        }
+
+        foreach (var entry in events.Where(entry => entry.Kind == "NodeDown"))
+        {
+            Toasts.Error(entry.Title + ".");
+        }
+    }
+
+    private void OnGatewayChanged()
+    {
+        Refresh();
+
+        if (!Gateway.IsReachable && !_reconnecting)
+        {
+            _ = ReconnectAsync(_lifetime.Token);
+        }
+    }
+
+    /// <summary>
+    /// Runs only while the gateway is down. Most pages load once and never call the
+    /// gateway again, so without this the banner stayed up - and the page stayed
+    /// empty - until the operator happened to navigate. Once the health check
+    /// answers, the current page is rebuilt so it fetches its data afresh.
+    /// </summary>
+    private async Task ReconnectAsync(CancellationToken cancellationToken)
+    {
+        _reconnecting = true;
+
+        try
+        {
+            using var timer = new PeriodicTimer(ReconnectInterval);
+
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                if (Gateway.IsReachable || await Api.IsGatewayReachableAsync(cancellationToken))
+                {
+                    Toasts.Success("The Smart-X gateway is back online.");
+                    _pageGeneration++;
+                    await InvokeAsync(StateHasChanged);
+                    break;
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The app is shutting down.
+        }
+        finally
+        {
+            _reconnecting = false;
+        }
+    }
+
+    protected override void OnParametersSet()
+    {
+        // A new page gets a fresh boundary, so one page's failure does not keep the
+        // error showing after the operator navigates somewhere else.
+        _errorBoundary?.Recover();
+    }
+
+    private void Refresh() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        _lifetime.Cancel();
+        Gateway.Changed -= OnGatewayChanged;
+        Toasts.Changed -= Refresh;
+        Navigation.LocationChanged -= OnLocationChanged;
+        Stream.StateChanged -= Refresh;
+        Stream.QueueStats -= OnQueueStats;
+        Stream.CriticalAlert -= OnCriticalAlert;
+        Stream.EventsLogged -= OnEventsLogged;
+    }
+}

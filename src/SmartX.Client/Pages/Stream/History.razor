@@ -1,0 +1,305 @@
+@page "/stream/history"
+@implements IDisposable
+@inject CommandStreamState State
+@inject StreamConnection Stream
+@inject SmartXApiClient Api
+@inject ToastService Toasts
+
+<PageTitle>Stream History &middot; Smart-X Gateway</PageTitle>
+
+<div class="page-head">
+    <h1>History &amp; learned patterns</h1>
+    <p>
+        Everything the command stream has recorded, newest first, read from a
+        <code>SortedDictionary</code> keyed by timestamp &mdash; so a late event lands in its
+        true place and "the latest hundred" never walks the whole log. Below it, every
+        habit the predictive engine has learned, with the evidence for each.
+    </p>
+</div>
+
+<div class="card">
+    <div class="card-head">
+        <h2>Event history</h2>
+        <span class="hint">@(_events.Count) shown &middot; filtered on the gateway</span>
+    </div>
+
+    <div class="history-filters" style="margin-bottom:var(--s4);">
+        <div class="field">
+            <label for="kind">Kind</label>
+            <select id="kind" value="@State.History.Kind" @onchange="e => ApplyAsync(State.History with { Kind = Blank(e.Value) })">
+                <option value="">All kinds</option>
+                @foreach (var kind in Kinds)
+                {
+                    <option value="@kind.Value">@kind.Label</option>
+                }
+            </select>
+        </div>
+        <div class="field">
+            <label for="level">Level</label>
+            <select id="level" value="@State.History.Level" @onchange="e => ApplyAsync(State.History with { Level = Blank(e.Value) })">
+                <option value="">All levels</option>
+                <option value="Critical">Critical</option>
+                <option value="Warning">Warning</option>
+                <option value="Info">Info</option>
+            </select>
+        </div>
+        <div class="field" style="flex:1 1 220px;">
+            <label for="device">Device</label>
+            <select id="device" value="@State.History.Mac" @onchange="e => ApplyAsync(State.History with { Mac = Blank(e.Value) })">
+                <option value="">All devices</option>
+                @foreach (var device in State.Devices.Values.OrderBy(device => device.DisplayName, StringComparer.OrdinalIgnoreCase))
+                {
+                    <option value="@device.MacAddress">@device.DisplayName</option>
+                }
+            </select>
+        </div>
+        <div class="field">
+            <label for="window">Time range</label>
+            <select id="window" value="@State.History.WindowMinutes" @onchange="ApplyWindowAsync">
+                <option value="15">Last 15 minutes</option>
+                <option value="60">Last hour</option>
+                <option value="360">Last 6 hours</option>
+                <option value="0">Everything held</option>
+            </select>
+        </div>
+    </div>
+
+    @if (_loading && _events.Count == 0)
+    {
+        <p class="loading-line">Reading the history&hellip;</p>
+    }
+    else if (_events.Count == 0)
+    {
+        <div class="empty">
+            <h3>Nothing in this range</h3>
+            <p>Widen the time range, or clear a filter.</p>
+        </div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <caption class="visually-hidden">Command stream events, newest first</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">Time</th>
+                        <th scope="col">Level</th>
+                        <th scope="col">Event</th>
+                        <th scope="col">Detail</th>
+                    </tr>
+                </thead>
+                <tbody>
+                @foreach (var entry in _events)
+                {
+                    <tr @key="entry.Sequence">
+                        <td class="mono" style="font-size:0.8rem; white-space:nowrap;">@Display.Local(entry.TimestampUtc)</td>
+                        <td class="level-@entry.Level.ToLowerInvariant()" style="font-size:0.82rem;">@entry.Level</td>
+                        <td>
+                            <strong style="font-size:0.88rem;">@entry.Title</strong>
+                            <div class="hint">@KindLabel(entry.Kind)</div>
+                        </td>
+                        <td style="color:var(--text-muted); font-size:0.84rem;">@entry.Detail</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
+<div class="grid grid-2" style="margin-top:var(--s4); align-items:start;">
+    <div class="card">
+        <div class="card-head">
+            <h2>What the engine has learned</h2>
+            <span class="hint">@_patterns.Count rule@(_patterns.Count == 1 ? "" : "s")</span>
+        </div>
+
+        <p style="color:var(--text-muted); font-size:0.86rem;">
+            Each row is "when the first thing happens, the second tends to follow within
+            @State.Insights.WindowMinutes.ToString("0") minutes". <strong>Confidence</strong> is how often it has held,
+            <strong>n</strong> how many times it has been seen, and <strong>lift</strong> above 1 means the
+            first genuinely makes the second more likely rather than it just being common.
+            Faded rows are still being learned and cannot become suggestions yet.
+        </p>
+
+        @if (_patterns.Count == 0)
+        {
+            <p class="loading-line">Nothing learned yet.</p>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table>
+                    <caption class="visually-hidden">Learned behaviour patterns</caption>
+                    <thead>
+                        <tr>
+                            <th scope="col">When</th>
+                            <th scope="col">Then</th>
+                            <th scope="col">Confidence</th>
+                            <th scope="col" class="num">Lift</th>
+                            <th scope="col" class="num">Gap</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var rule in _patterns.Take(25))
+                    {
+                        <tr style="@(rule.Trusted ? null : "opacity:0.55")"
+                            title="@(rule.Trusted ? "Trusted - can become a suggestion" : "Still learning - not yet seen often enough, or not reliably enough, to suggest")">
+                            <td style="font-size:0.84rem;">
+                                @rule.AntecedentLabel
+                                @if (!rule.Trusted)
+                                {
+                                    <span class="pill pill-neutral">learning</span>
+                                }
+                            </td>
+                            <td style="font-size:0.84rem;">@rule.ConsequentLabel</td>
+                            <td><Confidence Value="rule.Confidence" Support="rule.Support" /></td>
+                            <td class="num" style="color:@(rule.Lift >= 1 ? "var(--text)" : "var(--text-dim)")">@rule.Lift.ToString("0.0")</td>
+                            <td class="num">@Gap(rule.MeanGapSeconds)</td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+
+    <div class="card">
+        <CommandStackPanel History="State.Commands" Busy="_busy" OnUndo="UndoAsync" OnRedo="RedoAsync" />
+    </div>
+</div>
+
+@code {
+    private static readonly (string Value, string Label)[] Kinds =
+    [
+        ("AlertRaised", "Alert raised"),
+        ("AlertCleared", "Alert cleared"),
+        ("NodeDown", "Node offline"),
+        ("NodeRecovered", "Node back online"),
+        ("CommandIssued", "Command issued"),
+        ("CommandAcknowledged", "Command acknowledged"),
+        ("CommandTimedOut", "Command timed out"),
+        ("CommandUndone", "Command undone"),
+        ("CommandRedone", "Command redone"),
+        ("SuggestionAccepted", "Suggestion accepted"),
+        ("GatewayNote", "Gateway note")
+    ];
+
+    private readonly CancellationTokenSource _lifetime = new();
+    private List<StreamEventResponse> _events = [];
+    private List<PatternRuleResponse> _patterns = [];
+    private CancellationTokenSource? _refreshDebounce;
+    private bool _loading = true;
+    private bool _busy;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Stream.EventsLogged += OnEventsLogged;
+        State.Changed += OnStateChanged;
+
+        await State.EnsureLoadedAsync();
+        await Task.WhenAll(LoadEventsAsync(), LoadPatternsAsync());
+    }
+
+    private async Task ApplyAsync(HistoryFilter filter)
+    {
+        State.History = filter;
+        await LoadEventsAsync();
+    }
+
+    private Task ApplyWindowAsync(ChangeEventArgs args)
+        => ApplyAsync(State.History with
+        {
+            WindowMinutes = int.TryParse(args.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var minutes) ? minutes : 0
+        });
+
+    private async Task LoadEventsAsync()
+    {
+        _loading = true;
+        var filter = State.History;
+        DateTimeOffset? from = filter.WindowMinutes > 0 ? DateTimeOffset.UtcNow.AddMinutes(-filter.WindowMinutes) : null;
+
+        var result = await Api.GetStreamHistoryAsync(200, filter.Kind, filter.Level, filter.Mac, from, _lifetime.Token);
+        if (result.Value is { } events)
+        {
+            _events = events;
+        }
+
+        _loading = false;
+    }
+
+    private async Task LoadPatternsAsync()
+    {
+        var result = await Api.GetPatternsAsync(_lifetime.Token);
+        if (result.Value is { } patterns)
+        {
+            _patterns = patterns;
+        }
+    }
+
+    /// <summary>New events re-run the query, debounced, so a burst costs one round trip.</summary>
+    private void OnEventsLogged(List<StreamEventResponse> events)
+    {
+        _refreshDebounce?.Cancel();
+        _refreshDebounce = new CancellationTokenSource();
+        var token = _refreshDebounce.Token;
+
+        _ = InvokeAsync(async () =>
+        {
+            try
+            {
+                await Task.Delay(800, token);
+                await Task.WhenAll(LoadEventsAsync(), LoadPatternsAsync());
+                StateHasChanged();
+            }
+            catch (TaskCanceledException)
+            {
+                // A newer burst is on its way.
+            }
+        });
+    }
+
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+
+    private async Task UndoAsync()
+    {
+        _busy = true;
+        var result = await State.UndoAsync();
+        _busy = false;
+        Report(result);
+    }
+
+    private async Task RedoAsync()
+    {
+        _busy = true;
+        var result = await State.RedoAsync();
+        _busy = false;
+        Report(result);
+    }
+
+    private void Report(ApiResult<CommandOutcomeResponse> result)
+    {
+        if (result.Value is { } outcome)
+        {
+            Toasts.Success(outcome.Message);
+        }
+        else
+        {
+            Toasts.Error(result.IsUnreachable ? "Could not reach the gateway." : result.ErrorMessage);
+        }
+    }
+
+    private static string KindLabel(string kind) => Kinds.FirstOrDefault(entry => entry.Value == kind).Label ?? kind;
+
+    private static string Gap(double seconds) => seconds < 60 ? $"{seconds:0} s" : $"{seconds / 60:0.#} min";
+
+    private static string? Blank(object? value) => value?.ToString() is { Length: > 0 } text ? text : null;
+
+    public void Dispose()
+    {
+        _lifetime.Cancel();
+        _refreshDebounce?.Cancel();
+        Stream.EventsLogged -= OnEventsLogged;
+        State.Changed -= OnStateChanged;
+    }
+}

@@ -1,0 +1,646 @@
+@page "/stream"
+@implements IDisposable
+@inject CommandStreamState State
+@inject StreamConnection Stream
+@inject SmartXApiClient Api
+@inject ToastService Toasts
+@inject NavigationManager Navigation
+
+<PageTitle>Command Stream &middot; Smart-X Gateway</PageTitle>
+
+<div class="page-head">
+    <h1>Real-Time Command Stream</h1>
+    <p>
+        The live mesh, pushed from the gateway as packets are processed. Switch pumps and
+        relays from the grid, undo the last override, and act on what the predictive engine
+        has learned from how this gateway is usually run.
+    </p>
+</div>
+
+@if (DeviceSilence is { } silence)
+{
+    <div class="banner banner-warn" role="status">
+        <span aria-hidden="true">&#9888;</span>
+        <span>
+            <strong>No device has published @silence.</strong>
+            Start the virtual fleet with <code>dotnet run --project src/SmartX.DeviceEmulator</code>
+            &mdash; it publishes over HTTP exactly as an ESP32 would.
+        </span>
+    </div>
+}
+
+@foreach (var alert in State.Criticals)
+{
+    <div @key="alert" class="banner banner-bad critical-banner" role="alert">
+        <span aria-hidden="true">&#9888;</span>
+        <span>
+            <strong>@Label(alert.Code) &mdash; @alert.DisplayName.</strong>
+            @Capitalise(alert.Reason). Taken through the priority lane after @alert.WaitedMs.ToString("0.#") ms,
+            ahead of @alert.Overtook routine packet@(alert.Overtook == 1 ? "" : "s").
+        </span>
+        <button type="button" class="btn btn-sm btn-quiet" style="margin-left:auto;" @onclick="() => State.DismissCritical(alert)">Dismiss</button>
+    </div>
+}
+
+@* ---------------- Queues ---------------- *@
+<div class="card">
+    <div class="card-head">
+        <h2>Ingestion queues</h2>
+        <div class="test-tools" role="group" aria-label="Test tools">
+            <span class="hint">Test tools</span>
+            <button type="button" class="btn btn-sm" disabled="@_testing" @onclick="FloodAsync" title="Queue 500 routine packets in the standard lane">Flood 500</button>
+            <button type="button" class="btn btn-sm" disabled="@_testing" @onclick="@(() => SimulateAsync("MoistureCrash"))">Moisture crash</button>
+            <button type="button" class="btn btn-sm" disabled="@_testing" @onclick="@(() => SimulateAsync("PowerSpike"))">Power spike</button>
+            <button type="button" class="btn btn-sm" disabled="@_testing" @onclick="@(() => SimulateAsync("LinkLoss"))">Link loss</button>
+        </div>
+    </div>
+
+    <QueueLanes Stats="State.Queue" />
+</div>
+
+<div class="stream-grid">
+    <div class="stream-main">
+
+        @* ---------------- Devices ---------------- *@
+        <div class="card">
+            <div class="card-head">
+                <h2>Devices</h2>
+                <span class="hint" title="How the gateway evaluated the filter">@State.FilterInfo?.Strategy</span>
+            </div>
+
+            <div class="filter-bar">
+                <div class="field" style="flex:1 1 240px; margin:0;">
+                    <label for="device-search" class="visually-hidden">Search devices</label>
+                    <input type="search" id="device-search" placeholder="Search: pump a, zone 1, A4:CF:12…"
+                           value="@_searchDraft" @oninput="OnSearchInput" />
+                </div>
+
+                <div class="chips" role="group" aria-label="Category">
+                    <button type="button" class="chip @(State.Filter.Category is null ? "is-on" : null)" @onclick="@(() => ApplyCategory(null))">All</button>
+                    @foreach (var (category, count) in Categories)
+                    {
+                        <button type="button" class="chip @(State.Filter.Category == category ? "is-on" : null)" @onclick="() => ApplyCategory(category)">
+                            @SensorVocabulary.DisplayName(category) <span class="chip-count">@count</span>
+                        </button>
+                    }
+                </div>
+
+                <div class="chips" role="group" aria-label="Alert state">
+                    <button type="button" class="chip @(State.Filter.Alert is null ? "is-on" : null)" @onclick="@(() => ApplyAlert(null))">Any state</button>
+                    @foreach (var (alert, count) in AlertStates)
+                    {
+                        <button type="button" class="chip chip-@alert.ToLowerInvariant() @(State.Filter.Alert == alert ? "is-on" : null)" @onclick="() => ApplyAlert(alert)">
+                            @alert <span class="chip-count">@count</span>
+                        </button>
+                    }
+                </div>
+            </div>
+
+            <div class="bulk-bar">
+                <span class="hint">Bulk overrides &mdash; one undo reverts the lot:</span>
+                <button type="button" class="btn btn-sm" disabled="@(_busy.Count > 0)" @onclick="ShutDownIrrigationAsync">Shut down all valves &amp; pumps</button>
+                <button type="button" class="btn btn-sm" disabled="@(_busy.Count > 0)" @onclick="EmergencyStopAsync">Emergency stop: all actuators off</button>
+            </div>
+
+            @if (!State.Loaded)
+            {
+                <p class="loading-line">@(State.LoadError ?? "Loading the live device grid…")</p>
+            }
+            else if (!State.Visible.Any())
+            {
+                <div class="empty">
+                    <h3>No devices match</h3>
+                    <p>Nothing in the fleet matches this combination of category, alert state and search.</p>
+                    <button type="button" class="btn btn-quiet" @onclick="ClearFilters">Clear filters</button>
+                </div>
+            }
+            else
+            {
+                <div class="table-wrap">
+                    <table class="device-grid">
+                        <caption class="visually-hidden">Live devices</caption>
+                        <thead>
+                            <tr>
+                                <th scope="col">Device</th>
+                                <th scope="col">Zone</th>
+                                <th scope="col">State</th>
+                                <th scope="col" class="num">Latest</th>
+                                <th scope="col"><span class="visually-hidden">Last 30 minutes</span></th>
+                                <th scope="col">Override</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        @foreach (var device in State.VisibleDevices)
+                        {
+                            <tr @key="device.MacAddress"
+                                class="@(device.MacAddress == State.SelectedMac ? "is-selected" : null) @(device.Flagged ? "is-flagged" : null)"
+                                @onclick="() => SelectAsync(device.MacAddress)">
+                                <td>
+                                    <button type="button" class="link-button" @onclick="() => SelectAsync(device.MacAddress)" @onclick:stopPropagation>
+                                        @device.DisplayName
+                                    </button>
+                                    @if (device.Flagged)
+                                    {
+                                        <span class="flag" title="@device.FlagReason">&#9873; @device.FlagReason</span>
+                                    }
+                                    <div class="mono device-mac">@device.MacAddress &middot; @SensorVocabulary.DisplayName(device.Category)</div>
+                                </td>
+                                <td class="device-zone">@device.Zone</td>
+                                <td>
+                                    <span class="pill @AlertPill(device.AlertState)" title="@string.Join(", ", device.Alerts)">
+                                        <span class="dot" aria-hidden="true"></span>@(device.AlertState == "Clear" ? device.Status : device.AlertState)
+                                    </span>
+                                </td>
+                                <td class="num">@device.LatestReading</td>
+                                <td><Sparkline Points="device.Recent" Colour="@(device.AlertState == "Critical" ? "var(--bad)" : "var(--accent)")" /></td>
+                                <td @onclick:stopPropagation>
+                                    @if (device.IsActuator)
+                                    {
+                                        <ActuatorSwitch Device="device" Busy="_busy.Contains(device.MacAddress)"
+                                                        OnSwitch="on => SwitchAsync(device, on)" />
+                                        @if (device.PendingCommands > 0 || (device.AwaitingConfirmation && device.Status == "Silent"))
+                                        {
+                                            <span class="hint" style="display:block;">@(device.Status == "Silent" ? "offline - will time out" : "in mailbox")</span>
+                                        }
+                                    }
+                                    else
+                                    {
+                                        <span class="hint">sensor</span>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+
+        @* ---------------- Timeline ---------------- *@
+        <div class="card">
+            <div class="card-head">
+                <h2>Timeline@(Selected is { } selected ? $" — {selected.DisplayName}" : "")</h2>
+                <div class="chips" role="group" aria-label="Timeline window">
+                    @foreach (var minutes in new[] { 30, 60, 120, 360 })
+                    {
+                        <button type="button" class="chip @(State.TimelineMinutes == minutes ? "is-on" : null)" @onclick="() => SetWindowAsync(minutes)">
+                            @(minutes < 60 ? $"{minutes} min" : $"{minutes / 60} h")
+                        </button>
+                    }
+                </div>
+            </div>
+
+            <TimelineChart Timeline="_timeline" Threshold="ThresholdFor(Selected)" />
+
+            @if (_timeline is { } timeline)
+            {
+                <p class="hint" style="margin:var(--s2) 0 0;">
+                    @timeline.Points.Count one-minute buckets read in order from a <code>SortedDictionary</code>
+                    holding @timeline.BucketsHeld &middot; @timeline.LateArrivals late arrival@(timeline.LateArrivals == 1 ? "" : "s")
+                    slotted into place
+                </p>
+            }
+        </div>
+
+        @* ---------------- Live packets ---------------- *@
+        <div class="card">
+            <div class="card-head">
+                <h2>Live packets</h2>
+                <span class="hint">newest first, as the dispatch worker takes them</span>
+            </div>
+
+            @if (State.Packets.Count == 0)
+            {
+                <p class="loading-line">Waiting for the first packet.</p>
+            }
+            else
+            {
+                <div class="table-wrap">
+                    <table>
+                        <caption class="visually-hidden">Recently processed packets</caption>
+                        <thead>
+                            <tr>
+                                <th scope="col">Time</th>
+                                <th scope="col">Device</th>
+                                <th scope="col" class="num">Reading</th>
+                                <th scope="col">Lane</th>
+                                <th scope="col" class="num">Waited</th>
+                                <th scope="col" class="num">Overtook</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        @foreach (var packet in State.Packets.Take(12))
+                        {
+                            <tr>
+                                <td class="mono" style="font-size:0.8rem;">@Display.Local(packet.ProcessedAtUtc, "HH:mm:ss")</td>
+                                <td>@packet.DisplayName</td>
+                                <td class="num">@packet.Reading</td>
+                                <td>
+                                    <span class="pill @(packet.Lane == "Priority" ? "pill-critical" : "pill-neutral")" title="@packet.Reason">@packet.Lane</span>
+                                </td>
+                                <td class="num">@packet.WaitedMs.ToString("0") ms</td>
+                                <td class="num">@(packet.Overtook > 0 ? packet.Overtook.ToString("N0") : "—")</td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+
+    <aside class="stream-side" aria-label="Suggestions, commands and events">
+        <div class="card">
+            <SuggestionsPanel Insights="State.Insights" Busy="_busy"
+                              OnAccept="AcceptAsync" OnDismiss="DismissAsync" OnInspect="InspectAsync" />
+        </div>
+
+        <div class="card">
+            <CommandStackPanel History="State.Commands" Busy="_busy.Contains(StackKey)" OnUndo="UndoAsync" OnRedo="RedoAsync" />
+        </div>
+
+        <div class="card">
+            <div class="card-head">
+                <h2>Events</h2>
+                <a class="hint" href="stream/history">Full history &rarr;</a>
+            </div>
+            <EventFeed Events="State.Events" Take="10" />
+        </div>
+    </aside>
+</div>
+
+@code {
+    private const string StackKey = "__stack";
+
+    /// <summary>Category filter, mirrored in the address bar so a view can be bookmarked.</summary>
+    [SupplyParameterFromQuery(Name = "category")] public string? Category { get; set; }
+
+    /// <summary>Alert-state filter.</summary>
+    [SupplyParameterFromQuery(Name = "alert")] public string? Alert { get; set; }
+
+    /// <summary>Free-text filter.</summary>
+    [SupplyParameterFromQuery(Name = "q")] public string? Q { get; set; }
+
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly HashSet<string> _busy = [];
+    private CancellationTokenSource? _searchDebounce;
+    private string? _searchDraft;
+    private string? _lastRecordedSearch;
+    private TimelineResponse? _timeline;
+    private bool _first = true;
+    private bool _testing;
+    private bool _renderQueued;
+
+    private DeviceLiveResponse? Selected
+        => State.SelectedMac is { } mac && State.Devices.TryGetValue(mac, out var device) ? device : null;
+
+    private IEnumerable<(string Name, int Count)> Categories
+        => SensorVocabulary.Categories.Select(name => (name, State.FilterInfo?.CategoryCounts.GetValueOrDefault(name) ?? 0));
+
+    private IEnumerable<(string Name, int Count)> AlertStates
+        => new[] { "Critical", "Disconnected", "Warning", "Clear" }
+            .Select(name => (name, State.FilterInfo?.AlertCounts.GetValueOrDefault(name) ?? 0));
+
+    private string? DeviceSilence => State.Queue switch
+    {
+        null => null,
+        { SecondsSinceLastUplink: null } => "since the gateway started",
+        { SecondsSinceLastUplink: > 20 and var seconds } => $"for {seconds:0} seconds",
+        _ => null
+    };
+
+    protected override void OnInitialized()
+    {
+        State.Changed += QueueRender;
+        Stream.StateChanged += QueueRender;
+        Stream.ClearUnseen();
+        _ = RefreshTimelineLoopAsync(_lifetime.Token);
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var fromUrl = new StreamFilter(Blank(Category), Blank(Alert), Blank(Q));
+
+        // Coming back to the page with a bare URL: put the filter the operator left
+        // behind back into the address bar, rather than silently resetting it.
+        if (_first)
+        {
+            _first = false;
+            if (!fromUrl.IsActive && State.Filter.IsActive)
+            {
+                NavigateTo(State.Filter);
+                return;
+            }
+        }
+
+        _searchDraft = fromUrl.Text;
+
+        await State.EnsureLoadedAsync();
+        await State.SetFilterAsync(fromUrl);
+
+        if (State.SelectedMac is null || !State.Devices.ContainsKey(State.SelectedMac))
+        {
+            State.SelectedMac = State.VisibleDevices.FirstOrDefault()?.MacAddress;
+        }
+
+        await LoadTimelineAsync();
+    }
+
+    // ---------------- Filters ----------------
+
+    private void ApplyCategory(string? category) => NavigateTo(State.Filter with { Category = category });
+
+    private void ApplyAlert(string? alert) => NavigateTo(State.Filter with { Alert = alert });
+
+    private void ClearFilters()
+    {
+        _searchDraft = null;
+        NavigateTo(StreamFilter.None);
+    }
+
+    private void OnSearchInput(ChangeEventArgs args)
+    {
+        _searchDraft = args.Value?.ToString();
+
+        _searchDebounce?.Cancel();
+        _searchDebounce = new CancellationTokenSource();
+        _ = DebounceSearchAsync(_searchDraft, _searchDebounce.Token);
+    }
+
+    /// <summary>
+    /// Filters as the operator types, then, once they stop, tells the predictive engine
+    /// what they searched for - that is the "search after an alert" it learns from.
+    /// </summary>
+    private async Task DebounceSearchAsync(string? text, CancellationToken token)
+    {
+        try
+        {
+            await Task.Delay(350, token);
+            await InvokeAsync(() => NavigateTo(State.Filter with { Text = Blank(text) }));
+
+            await Task.Delay(900, token);
+            var committed = text?.Trim();
+            if (committed is { Length: >= 2 } && !string.Equals(committed, _lastRecordedSearch, StringComparison.OrdinalIgnoreCase))
+            {
+                _lastRecordedSearch = committed;
+                await State.RecordSearchAsync(committed);
+            }
+        }
+        catch (TaskCanceledException)
+        {
+            // Still typing.
+        }
+    }
+
+    private void NavigateTo(StreamFilter filter)
+        => Navigation.NavigateTo(
+            Navigation.GetUriWithQueryParameters(new Dictionary<string, object?>
+            {
+                ["category"] = filter.Category,
+                ["alert"] = filter.Alert,
+                ["q"] = Blank(filter.Text)
+            }),
+            replace: true);
+
+    // ---------------- Selection and timeline ----------------
+
+    private async Task SelectAsync(string mac)
+    {
+        if (State.SelectedMac == mac)
+        {
+            return;
+        }
+
+        State.SelectedMac = mac;
+        await LoadTimelineAsync();
+
+        // Opening a device is something the engine learns from too.
+        await State.RecordInspectAsync(mac);
+    }
+
+    private async Task SetWindowAsync(int minutes)
+    {
+        State.TimelineMinutes = minutes;
+        await LoadTimelineAsync();
+    }
+
+    private async Task LoadTimelineAsync()
+    {
+        if (State.SelectedMac is not { } mac)
+        {
+            _timeline = null;
+            return;
+        }
+
+        var result = await Api.GetTimelineAsync(mac, State.TimelineMinutes, _lifetime.Token);
+        if (result.Value is { } timeline && timeline.MacAddress.Equals(State.SelectedMac, StringComparison.OrdinalIgnoreCase))
+        {
+            _timeline = timeline;
+        }
+    }
+
+    private async Task RefreshTimelineLoopAsync(CancellationToken token)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(15));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(token))
+            {
+                await LoadTimelineAsync();
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Left the page.
+        }
+    }
+
+    private static double? ThresholdFor(DeviceLiveResponse? device) => device?.Category switch
+    {
+        "Environmental" when device.Unit == "%" => 20,
+        "PowerConsumption" => 2500,
+        "Connectivity" => -90,
+        _ => null
+    };
+
+    // ---------------- Commands ----------------
+
+    private async Task SwitchAsync(DeviceLiveResponse device, bool on)
+    {
+        if (!_busy.Add(device.MacAddress))
+        {
+            return;
+        }
+
+        var result = await State.IssueAsync(new IssueCommandRequest
+        {
+            Action = on ? "SwitchOn" : "SwitchOff",
+            Targets = [device.MacAddress]
+        });
+
+        _busy.Remove(device.MacAddress);
+        Report(result.Succeeded, result.Value?.Message, result);
+    }
+
+    private Task ShutDownIrrigationAsync()
+        => BulkAsync("Shut down all valves and pumps", device =>
+            device.DisplayName.Contains("Valve", StringComparison.OrdinalIgnoreCase)
+            || device.DisplayName.Contains("Pump", StringComparison.OrdinalIgnoreCase));
+
+    private Task EmergencyStopAsync() => BulkAsync("Emergency stop: all actuators off", _ => true);
+
+    private async Task BulkAsync(string label, Func<DeviceLiveResponse, bool> include)
+    {
+        var targets = State.Devices.Values.Where(device => device.IsActuator && include(device)).Select(device => device.MacAddress).ToList();
+        if (targets.Count == 0 || !_busy.Add(StackKey))
+        {
+            return;
+        }
+
+        var result = await State.IssueAsync(new IssueCommandRequest { Action = "SwitchOff", Targets = targets, Label = label });
+        _busy.Remove(StackKey);
+        Report(result.Succeeded, result.Value is null ? null : $"{label}: sent to {targets.Count} actuators. Undo reverts them all.", result);
+    }
+
+    private async Task UndoAsync()
+    {
+        if (!_busy.Add(StackKey))
+        {
+            return;
+        }
+
+        var result = await State.UndoAsync();
+        _busy.Remove(StackKey);
+        Report(result.Succeeded, result.Value?.Message, result);
+    }
+
+    private async Task RedoAsync()
+    {
+        if (!_busy.Add(StackKey))
+        {
+            return;
+        }
+
+        var result = await State.RedoAsync();
+        _busy.Remove(StackKey);
+        Report(result.Succeeded, result.Value?.Message, result);
+    }
+
+    // ---------------- Suggestions ----------------
+
+    private async Task AcceptAsync(SuggestionResponse suggestion)
+    {
+        if (!_busy.Add(suggestion.Key))
+        {
+            return;
+        }
+
+        var result = await State.AcceptAsync(suggestion.Key);
+        _busy.Remove(suggestion.Key);
+        Report(result.Succeeded, result.Value?.Message, result);
+    }
+
+    private async Task DismissAsync(SuggestionResponse suggestion)
+    {
+        if (!_busy.Add(suggestion.Key))
+        {
+            return;
+        }
+
+        await State.DismissAsync(suggestion.Key);
+        _busy.Remove(suggestion.Key);
+    }
+
+    /// <summary>Opens the device an insight points at, and tells the engine it was acted on.</summary>
+    private async Task InspectAsync(SuggestionResponse insight)
+    {
+        if (insight.MacAddress is { } mac)
+        {
+            State.SelectedMac = mac;
+            await LoadTimelineAsync();
+        }
+
+        await State.AcceptAsync(insight.Key);
+    }
+
+    // ---------------- Test tools ----------------
+
+    private async Task FloodAsync()
+    {
+        _testing = true;
+        var result = await Api.FloodAsync(500);
+        _testing = false;
+        Report(result.Succeeded, result.Value?.Message, result);
+    }
+
+    private async Task SimulateAsync(string kind)
+    {
+        _testing = true;
+        var result = await Api.SimulateCriticalAsync(kind);
+        _testing = false;
+        Report(result.Succeeded, result.Value?.Message, result);
+    }
+
+    // ---------------- Helpers ----------------
+
+    private void Report<T>(bool succeeded, string? message, ApiResult<T> result)
+    {
+        if (succeeded)
+        {
+            Toasts.Success(message ?? "Done.");
+        }
+        else
+        {
+            Toasts.Error(result.IsUnreachable ? "Could not reach the gateway." : result.ErrorMessage);
+        }
+    }
+
+    /// <summary>
+    /// Pushes can arrive several times a second; collapsing them into at most one
+    /// render every tenth of a second keeps the page responsive under a flood.
+    /// </summary>
+    private void QueueRender()
+    {
+        if (_renderQueued)
+        {
+            return;
+        }
+
+        _renderQueued = true;
+        _ = InvokeAsync(async () =>
+        {
+            await Task.Delay(100);
+            _renderQueued = false;
+            StateHasChanged();
+        });
+    }
+
+    private static string AlertPill(string state) => state switch
+    {
+        "Critical" or "Disconnected" => "pill-critical",
+        "Warning" => "pill-warning",
+        _ => "pill-online"
+    };
+
+    private static string Label(string code) => code switch
+    {
+        "CriticalLow" => "Critical low reading",
+        "PowerSpike" => "Power spike",
+        "LinkLoss" => "Mesh link loss",
+        "DeviceAlarm" => "Device alarm",
+        _ => code
+    };
+
+    private static string Capitalise(string text) => string.IsNullOrEmpty(text) ? text : char.ToUpperInvariant(text[0]) + text[1..];
+
+    private static string? Blank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    public void Dispose()
+    {
+        _lifetime.Cancel();
+        _searchDebounce?.Cancel();
+        State.Changed -= QueueRender;
+        Stream.StateChanged -= QueueRender;
+    }
+}

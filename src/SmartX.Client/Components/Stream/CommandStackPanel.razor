@@ -1,0 +1,99 @@
+@* The override history as the stack it is: the top entry is what Undo will
+   revert, and it is drawn on top. Each target shows where its command has got to
+   on the device - pending, delivered, acknowledged or timed out. *@
+
+<div class="card-head">
+    <h2>Command history</h2>
+    <span class="hint mono">Stack&lt;CommandRecord&gt;</span>
+</div>
+
+<div style="display:flex; gap:var(--s2); margin-bottom:var(--s3);">
+    <button type="button" class="btn btn-sm" disabled="@(!History.CanUndo || Busy)" @onclick="OnUndo" title="@UndoTitle">
+        &#8630; Undo
+    </button>
+    <button type="button" class="btn btn-sm btn-quiet" disabled="@(!History.CanRedo || Busy)" @onclick="OnRedo" title="@RedoTitle">
+        &#8631; Redo
+    </button>
+    <span class="hint" style="margin-left:auto; align-self:center;">
+        @History.UndoStack.Count of @History.MaxDepth
+    </span>
+</div>
+
+@if (History.UndoStack.Count == 0 && History.RedoStack.Count == 0)
+{
+    <p class="loading-line">No overrides yet. Switch a pump or relay and it lands here, ready to undo.</p>
+}
+else
+{
+    <ol class="stack" aria-label="Undo stack, most recent first">
+        @foreach (var (record, index) in History.UndoStack.Take(MaxShown).Select((record, index) => (record, index)))
+        {
+            <li @key="record.Id" class="stack-item @(index == 0 ? "is-top" : null)">
+                <div class="stack-title">
+                    <span class="mono">#@record.Number</span>
+                    <span>@record.Label</span>
+                    @if (index == 0)
+                    {
+                        <span class="pill pill-neutral" title="Undo reverts this one">top</span>
+                    }
+                    @if (record.Origin == "Suggestion")
+                    {
+                        <span class="pill pill-neutral" title="Issued from Suggested Actions">suggested</span>
+                    }
+                </div>
+                <div class="stack-targets">
+                    @foreach (var target in record.Targets)
+                    {
+                        <span class="stack-target" title="@target.MacAddress">
+                            @target.DisplayName
+                            <span class="mono">@Word(target.PreviousState)&rarr;@Word(target.NewState)</span>
+                            <span class="status-@target.Status.ToLowerInvariant()">@target.Status</span>
+                        </span>
+                    }
+                </div>
+            </li>
+        }
+    </ol>
+
+    @if (History.RedoStack.Count > 0)
+    {
+        <div class="stat-label" style="margin:var(--s3) 0 var(--s2);">Redo stack</div>
+        <ol class="stack stack-redo" aria-label="Redo stack, most recently undone first">
+            @foreach (var record in History.RedoStack.Take(3))
+            {
+                <li @key="record.Id" class="stack-item">
+                    <div class="stack-title"><span class="mono">#@record.Number</span> <span>@record.Label</span></div>
+                </li>
+            }
+        </ol>
+    }
+}
+
+@code {
+    private const int MaxShown = 6;
+
+    /// <summary>Both stacks.</summary>
+    [Parameter, EditorRequired] public CommandHistoryResponse History { get; set; } = default!;
+
+    [Parameter] public EventCallback OnUndo { get; set; }
+
+    [Parameter] public EventCallback OnRedo { get; set; }
+
+    /// <summary>True while an undo or redo is in flight.</summary>
+    [Parameter] public bool Busy { get; set; }
+
+    private string UndoTitle => History.UndoStack.FirstOrDefault() is { } top
+        ? $"Revert #{top.Number}: {top.Label}"
+        : "Nothing to undo";
+
+    private string RedoTitle => History.RedoStack.FirstOrDefault() is { } top
+        ? $"Re-apply #{top.Number}: {top.Label}"
+        : "Nothing to redo";
+
+    private static string Word(bool? state) => state switch
+    {
+        true => "ON",
+        false => "OFF",
+        null => "?"
+    };
+}

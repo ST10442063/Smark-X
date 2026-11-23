@@ -1,0 +1,444 @@
+@page "/telemetry"
+@inject SmartXApiClient Api
+@inject NavigationManager Navigation
+@inject ToastService Toasts
+@inject GatewayStatus Gateway
+
+<PageTitle>Telemetry &middot; Smart-X Gateway</PageTitle>
+
+<div class="page-head">
+    <h1>Telemetry workbench</h1>
+    <p>
+        Publish readings into the ingestion API the way a node would, one at a time or as a
+        flushed batch, and read back what the gateway stored.
+    </p>
+</div>
+
+@if (!_loaded)
+{
+    <div class="card"><p class="loading-line">Loading nodes&hellip;</p></div>
+}
+else if (_sensors.Count == 0 && !Gateway.IsReachable)
+{
+    <div class="card">
+        <div class="empty">
+            <h3>Waiting for the gateway</h3>
+            <p>The workbench will load its nodes as soon as the gateway answers.</p>
+        </div>
+    </div>
+}
+else if (_sensors.Count == 0)
+{
+    <div class="card">
+        <div class="empty">
+            <h3>No nodes registered</h3>
+            <p>Telemetry has to be attributed to a registered node before the gateway will accept it.</p>
+            <a class="btn btn-primary" href="sensors/register">Register a node</a>
+        </div>
+    </div>
+}
+else
+{
+    <div class="card">
+        <div style="display:flex; gap:var(--s3); align-items:flex-end; flex-wrap:wrap;">
+            <div class="field" style="flex:1 1 360px; margin-bottom:0;">
+                <label for="sensorId">Target node</label>
+                <select id="sensorId" value="@_selected?.Id" @onchange="OnSensorChanged">
+                    @foreach (var sensor in _sensors)
+                    {
+                        <option value="@sensor.Id">@sensor.DisplayName — @sensor.MacAddress (@sensor.Unit)</option>
+                    }
+                </select>
+            </div>
+            @if (_selected is not null)
+            {
+                <div class="field" style="margin-left:auto; margin-bottom:0;">
+                    <a class="btn btn-quiet" href="sensors/@_selected.Id">Open profile</a>
+                </div>
+            }
+        </div>
+    </div>
+
+    @if (_selected is { } selected)
+    {
+        var payloadType = Display.PayloadTypeFor(selected.Category);
+
+        <div class="grid grid-2">
+
+            @* ---------------- Publish ---------------- *@
+            <div class="card">
+                <div class="card-head">
+                    <h2>Publish</h2>
+                    <span class="hint">as <code>TelemetryPacket&lt;@Display.ClrTypeFor(payloadType)&gt;</code></span>
+                </div>
+
+                <h3>Single reading</h3>
+                <form @onsubmit="PublishAsync">
+                    <div class="form-row">
+                        <div class="field">
+                            <label for="singleValue">Value (@selected.Unit)</label>
+                            <input type="text" id="singleValue" @bind="_singleValue" />
+                        </div>
+                        <div class="field">
+                            <label for="sequenceNumber">Sequence number</label>
+                            <input type="number" id="sequenceNumber" @bind="_sequenceNumber" min="0" />
+                            <span class="help">Used to spot dropped packets.</span>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary" disabled="@_busy">Publish reading</button>
+                </form>
+
+                <hr class="rule" />
+
+                <h3>Batch flush</h3>
+                <p style="color:var(--text-muted); font-size:0.86rem;">
+                    Stored as a single jagged row, sized to exactly this many readings.
+                </p>
+
+                <form @onsubmit="PublishBatchAsync">
+                    <div class="field">
+                        <label for="values">Readings</label>
+                        <textarea id="values" rows="3" @bind="_batchValues" placeholder="44.1, 43.8, 45.2, 44.9"></textarea>
+                        <span class="help">Separate with commas, spaces or new lines.</span>
+                    </div>
+
+                    <div class="field">
+                        <label for="intervalSeconds">Seconds between readings</label>
+                        <input type="number" id="intervalSeconds" @bind="_intervalSeconds" min="0.001" step="any" />
+                    </div>
+
+                    <button type="submit" class="btn btn-primary" disabled="@_busy">Publish batch</button>
+                </form>
+
+                <hr class="rule" />
+
+                <h3>Generate under load</h3>
+                <p style="color:var(--text-muted); font-size:0.86rem;">
+                    Synthesises a realistic run for this node category, so the ring buffer and
+                    the detector can be exercised without physical hardware.
+                </p>
+
+                <form @onsubmit="GenerateAsync">
+                    <div class="form-row">
+                        <div class="field">
+                            <label for="count">Reading count</label>
+                            <input type="number" id="count" @bind="_generateCount" min="1" max="5000" />
+                        </div>
+                        <div class="field" style="display:flex; align-items:flex-end;">
+                            <div class="checkbox" style="margin-bottom:var(--s2);">
+                                <input type="checkbox" id="injectAnomaly" @bind="_injectAnomaly" />
+                                <label for="injectAnomaly">Inject an anomaly</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary" disabled="@_busy">Generate readings</button>
+                </form>
+            </div>
+
+            @* ---------------- Stored ---------------- *@
+            <div class="card">
+                <div class="card-head">
+                    <h2>What the gateway stored</h2>
+                    <span class="hint">@selected.DisplayName</span>
+                </div>
+
+                @if (_history is not { Readings.Count: > 0 } history)
+                {
+                    <div class="empty">
+                        <h3>Nothing stored yet</h3>
+                        <p>Publish or generate readings to fill this node's history.</p>
+                    </div>
+                }
+                else
+                {
+                    var points = history.Readings;
+
+                    <div class="grid grid-stats" style="margin-bottom:var(--s4);">
+                        <div class="stat">
+                            <div class="stat-label">Readings</div>
+                            <div class="stat-value">@history.TotalReadings.ToString("N0")</div>
+                        </div>
+                        <div class="stat">
+                            <div class="stat-label">Batches</div>
+                            <div class="stat-value">@history.BatchCount</div>
+                        </div>
+                        <div class="stat">
+                            <div class="stat-label">Mean</div>
+                            <div class="stat-value" style="font-size:1.2rem;">@history.Mean.ToString("0.##")</div>
+                        </div>
+                        <div class="stat">
+                            <div class="stat-label">Range</div>
+                            <div class="stat-value" style="font-size:1.05rem;">
+                                @history.Minimum.ToString("0.#") – @history.Maximum.ToString("0.#")
+                            </div>
+                        </div>
+                    </div>
+
+                    @* A sparkline drawn straight from the stored readings. Inline SVG
+                       rather than a charting library, because a polyline is all this
+                       needs and a dependency would be larger than the feature. *@
+                    <div class="inset" style="background:var(--surface-0); margin-bottom:var(--s4);">
+                        <svg viewBox="0 0 600 100" preserveAspectRatio="none"
+                             style="width:100%; height:110px; display:block;" role="img"
+                             aria-label="Line chart of the last @points.Count readings for @selected.DisplayName, ranging from @history.Minimum.ToString("0.#") to @history.Maximum.ToString("0.#") @selected.Unit">
+                            <polyline points="@ChartPath(points)" fill="none" stroke="var(--accent)" stroke-width="1.5"
+                                      vector-effect="non-scaling-stroke" />
+                            @* Anomalous readings get a dot, so a spike is findable on the
+                               line rather than only in the table underneath. *@
+                            @for (var i = 0; i < points.Count; i++)
+                            {
+                                if (points[i].IsAnomalous)
+                                {
+                                    <circle cx="@Display.Css(i * ChartStep(points))" cy="@Display.Css(PlotY(points, points[i].Value))"
+                                            r="3" fill="var(--bad)" />
+                                }
+                            }
+                        </svg>
+                        <div style="display:flex; justify-content:space-between; color:var(--text-dim); font-size:0.74rem; margin-top:var(--s1);">
+                            <span>@Display.Local(points[0].TimestampUtc, "dd MMM HH:mm")</span>
+                            <span>last @Display.Count(points.Count, "reading")</span>
+                            <span>@Display.Local(points[^1].TimestampUtc, "dd MMM HH:mm")</span>
+                        </div>
+                    </div>
+
+                    @if (history.AggregateOfLastTwo is not null)
+                    {
+                        <div class="inset" style="margin-bottom:var(--s4);">
+                            <div class="stat-label" style="margin-bottom:var(--s2);">
+                                Overloaded operators, on the last two readings
+                            </div>
+                            <div class="mono" style="font-size:0.84rem; color:var(--text-muted);">
+                                latest + previous = <span style="color:var(--accent)">@history.AggregateOfLastTwo</span><br />
+                                latest − previous = <span style="color:var(--accent)">@history.DeltaOfLastTwo</span>
+                            </div>
+                        </div>
+                    }
+
+                    <div class="stat-label" style="margin-bottom:var(--s2);">Jagged batch shape</div>
+                    <p style="color:var(--text-muted); font-size:0.84rem;">
+                        <span class="mono">
+                            [@string.Join(", ", history.BatchLengths.TakeLast(16))@(history.BatchLengths.Count > 16 ? " …" : "")]
+                        </span>
+                    </p>
+                    <p style="color:var(--text-dim); font-size:0.82rem;">
+                        @Display.Count(history.TotalReadings, "reading") stored.
+                        A rectangular array sized to the longest batch would have needed
+                        @history.RectangularEquivalentSlots.ToString("N0") slots &mdash;
+                        @((history.RectangularEquivalentSlots - history.TotalReadings).ToString("N0")) of them empty.
+                    </p>
+
+                    <div class="table-wrap" style="max-height:260px; overflow-y:auto; margin-top:var(--s4);">
+                        <table>
+                            <caption class="visually-hidden">Most recent readings</caption>
+                            <thead>
+                                <tr>
+                                    <th scope="col">Captured</th>
+                                    <th scope="col" class="num">Reading</th>
+                                    <th scope="col" class="num">z</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                            @foreach (var reading in Enumerable.Reverse(points).Take(30))
+                            {
+                                <tr>
+                                    <td class="mono" style="font-size:0.78rem;">@Display.Local(reading.TimestampUtc)</td>
+                                    <td class="num">@reading.Formatted</td>
+                                    <td class="num" style="color:@(reading.IsAnomalous ? "var(--bad)" : "var(--text-dim)")">
+                                        @reading.ZScore.ToString("0.0")
+                                    </td>
+                                </tr>
+                            }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </div>
+        </div>
+    }
+}
+
+@code {
+    /// <summary>The node to focus on, carried in the URL so a profile can link straight here.</summary>
+    [SupplyParameterFromQuery]
+    public Guid? SensorId { get; set; }
+
+    private List<SensorResponse> _sensors = [];
+    private SensorResponse? _selected;
+    private TelemetryHistoryResponse? _history;
+    private bool _loaded;
+    private bool _busy;
+
+    private string _singleValue = string.Empty;
+    private long _sequenceNumber;
+    private string _batchValues = string.Empty;
+    private double _intervalSeconds = 1;
+    private int _generateCount = 250;
+    private bool _injectAnomaly;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!_loaded)
+        {
+            _sensors = (await Api.ListSensorsAsync()).Value ?? [];
+            _loaded = true;
+        }
+
+        // Default to the first node rather than an empty page, so the workbench is
+        // usable immediately instead of demanding a selection before it shows anything.
+        var next = SensorId is { } id
+            ? _sensors.FirstOrDefault(sensor => sensor.Id == id) ?? _sensors.FirstOrDefault()
+            : _sensors.FirstOrDefault();
+
+        if (next?.Id != _selected?.Id)
+        {
+            _selected = next;
+            // Pre-fill with values the node can actually accept. An integer power meter
+            // handed "42.5" is correctly refused by the gateway, which made the
+            // workbench's own defaults fail on first click.
+            (_singleValue, _batchValues) = Display.PayloadTypeFor(next?.Category) switch
+            {
+                "int" => ("420", "418, 425, 431, 422, 440, 437"),
+                "bool" => ("true", "true, false, true, true, false, true"),
+                _ => ("42.5", "44.1, 43.8, 45.2, 44.9, 46.0, 45.1")
+            };
+            await LoadHistoryAsync();
+        }
+    }
+
+    private void OnSensorChanged(ChangeEventArgs args)
+    {
+        if (Guid.TryParse(args.Value?.ToString(), out var id))
+        {
+            Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("sensorId", id));
+        }
+    }
+
+    private async Task LoadHistoryAsync()
+    {
+        _history = _selected is null ? null : (await Api.GetHistoryAsync(_selected.Id, take: 120)).Value;
+    }
+
+    private async Task PublishAsync()
+    {
+        if (_selected is null)
+        {
+            return;
+        }
+
+        var accepted = await RunAsync(
+            () => Api.IngestAsync(new TelemetryIngestRequest
+            {
+                MacAddress = _selected.MacAddress,
+                PayloadType = Display.PayloadTypeFor(_selected.Category),
+                Value = _singleValue,
+                SequenceNumber = _sequenceNumber
+            }),
+            ok => $"{ok.Message} Wrapped as {ok.PacketType}; buffer {ok.BufferOccupancy}/{ok.BufferCapacity}.");
+
+        // Only a packet the gateway accepted consumes a sequence number. Advancing on a
+        // rejected one would open a gap that looks exactly like a dropped packet.
+        if (accepted)
+        {
+            _sequenceNumber++;
+        }
+    }
+
+    private async Task PublishBatchAsync()
+    {
+        if (_selected is null)
+        {
+            return;
+        }
+
+        // Accept the separators an operator would naturally paste - commas, spaces
+        // or one reading per line - rather than insisting on a single format.
+        var values = _batchValues
+            .Split([',', ' ', '\n', '\r', '\t'], StringSplitOptions.RemoveEmptyEntries)
+            .ToList();
+
+        if (values.Count == 0)
+        {
+            Toasts.Error("Enter at least one reading to publish as a batch.");
+            return;
+        }
+
+        await RunAsync(
+            () => Api.IngestBatchAsync(new TelemetryBatchRequest
+            {
+                MacAddress = _selected.MacAddress,
+                PayloadType = Display.PayloadTypeFor(_selected.Category),
+                Values = values,
+                IntervalSeconds = _intervalSeconds <= 0 ? 1d : _intervalSeconds
+            }),
+            ok => $"{ok.Message} Stored as batch {ok.HistoricalBatches} of {ok.ReadingsAccepted} readings.");
+    }
+
+    private async Task GenerateAsync()
+    {
+        if (_selected is null)
+        {
+            return;
+        }
+
+        await RunAsync(
+            () => Api.GenerateAsync(new GenerateTelemetryRequest
+            {
+                MacAddress = _selected.MacAddress,
+                Count = _generateCount,
+                InjectAnomaly = _injectAnomaly
+            }),
+            ok => $"{ok.Message} Buffer {ok.BufferOccupancy}/{ok.BufferCapacity}, {ok.BufferOverwritten} overwritten.");
+    }
+
+    /// <summary>Sends one ingestion request, reports the outcome, and re-reads what the gateway stored.</summary>
+    /// <returns>True when the gateway accepted the request.</returns>
+    private async Task<bool> RunAsync(
+        Func<Task<ApiResult<IngestionResultResponse>>> send,
+        Func<IngestionResultResponse, string> describe)
+    {
+        _busy = true;
+
+        var result = await send();
+
+        if (result.Succeeded)
+        {
+            Toasts.Success(describe(result.Value!));
+            await LoadHistoryAsync();
+        }
+        else
+        {
+            // Field errors from the gateway, flattened: this workbench has no per-field
+            // layout, so the specific rule that failed is what the operator needs.
+            var detail = result.FieldErrors.Count > 0
+                ? string.Join(" ", result.FieldErrors.Values.SelectMany(messages => messages))
+                : result.ErrorMessage;
+
+            Toasts.Error(detail);
+        }
+
+        _busy = false;
+        return result.Succeeded;
+    }
+
+    // Sparkline geometry. The chart is 600 x 100 user units; readings are spread
+    // evenly across the width and scaled into the middle 90% of the height.
+    private static double ChartStep(List<TelemetryReadingResponse> points)
+        => points.Count > 1 ? 600d / (points.Count - 1) : 600d;
+
+    private static double PlotY(List<TelemetryReadingResponse> points, double value)
+    {
+        var min = points.Min(reading => reading.Value);
+        var span = points.Max(reading => reading.Value) - min;
+
+        return span <= double.Epsilon ? 50d : 100d - ((value - min) / span * 90d) - 5d;
+    }
+
+    private static string ChartPath(List<TelemetryReadingResponse> points)
+    {
+        var step = ChartStep(points);
+        return string.Join(' ', points.Select((reading, index) =>
+            $"{Display.Css(index * step)},{Display.Css(PlotY(points, reading.Value))}"));
+    }
+}

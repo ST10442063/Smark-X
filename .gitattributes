@@ -1,0 +1,11 @@
+* text=auto
+*.cs text diff=csharp
+*.cshtml text
+*.csproj text
+*.sln text eol=crlf
+*.png binary
+*.jpg binary
+*.ico binary
+
+# Shell scripts must keep LF endings or bash on macOS/Linux refuses to run them.
+*.sh text eol=lf

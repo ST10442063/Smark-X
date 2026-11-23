@@ -1,0 +1,259 @@
+@page "/deployment"
+@using System.Text.Json
+@inject SmartXApiClient Api
+
+<PageTitle>Deployment &middot; Smart-X Gateway</PageTitle>
+
+<div class="page-head">
+    <h1>Deployment profile validation</h1>
+    <p>
+        A profile nests Facility inside Zone inside Sub-Zone inside Device, to whatever
+        depth the site needs. The gateway walks it by recursive descent, confirming every
+        device sits safely within its branch and resolving the heartbeat each one inherits
+        from the nearest ancestor that declares one.
+    </p>
+</div>
+
+<div class="grid grid-2">
+
+    @* ---------------- Editor ---------------- *@
+    <div class="card">
+        <div class="card-head">
+            <h2>Profile</h2>
+            <span class="hint">JSON, nested to any depth</span>
+        </div>
+
+        @if (_error is { Length: > 0 })
+        {
+            <div class="banner banner-bad" role="alert">
+                <span aria-hidden="true">&#9888;</span>
+                <span><strong>That profile could not be validated.</strong>@_error</span>
+            </div>
+        }
+
+        <form @onsubmit="ValidateAsync">
+            <div class="field">
+                <label for="profileJson" class="visually-hidden">Deployment profile JSON</label>
+                <textarea id="profileJson" rows="22" spellcheck="false" aria-describedby="profileHelp"
+                          @bind="_profileJson"></textarea>
+                <span class="help" id="profileHelp">
+                    Pre-filled from the gateway using nodes that are actually registered, so
+                    a first run exercises the is-registered check rather than reporting
+                    unknown devices.
+                </span>
+            </div>
+
+            <div style="display:flex; gap:var(--s3); flex-wrap:wrap;">
+                <button type="submit" class="btn btn-primary" disabled="@_busy">
+                    @(_busy ? "Walking the tree…" : "Validate profile")
+                </button>
+                <button type="button" class="btn btn-quiet" @onclick="LoadExampleAsync" disabled="@_busy">Reset to example</button>
+            </div>
+        </form>
+
+        <div style="margin-top:var(--s5); padding-top:var(--s4); border-top:1px solid var(--border);">
+            <div class="stat-label" style="margin-bottom:var(--s2);">Try breaking it</div>
+            <ul style="color:var(--text-muted); font-size:0.85rem; padding-left:var(--s5); margin:0;">
+                <li style="margin-bottom:var(--s1);">
+                    Nest a <code>Facility</code> inside a <code>Zone</code> &mdash; rejected as
+                    <code>TIER_ORDER</code>.
+                </li>
+                <li style="margin-bottom:var(--s1);">
+                    Remove a device <code>macAddress</code> &mdash; <code>DEVICE_NO_MAC</code>.
+                </li>
+                <li style="margin-bottom:var(--s1);">
+                    Give two vertices the same <code>id</code> &mdash; <code>DUPLICATE_ID</code>.
+                </li>
+                <li>
+                    Nest sub-zones past 32 tiers &mdash; <code>MAX_DEPTH</code>, reported rather
+                    than overflowing the stack.
+                </li>
+            </ul>
+        </div>
+    </div>
+
+    @* ---------------- Findings ---------------- *@
+    <div class="card" style="align-self:start;">
+        <div class="card-head">
+            <h2>Findings</h2>
+            @if (_result is not null)
+            {
+                <span class="pill @(_result.IsValid ? "pill-ok" : "pill-critical")">
+                    <span class="dot" aria-hidden="true"></span>@(_result.IsValid ? "Valid" : "Invalid")
+                </span>
+            }
+        </div>
+
+        @if (_result is null)
+        {
+            <div class="empty">
+                <h3>Nothing validated yet</h3>
+                <p>Submit a profile to see how the recursive walk handles it.</p>
+            </div>
+        }
+        else
+        {
+            <p style="color:var(--text-muted);">@_result.Summary</p>
+
+            <div class="grid grid-stats" style="margin-bottom:var(--s4);">
+                <div class="stat">
+                    <div class="stat-label">Vertices visited</div>
+                    <div class="stat-value">@_result.NodesVisited</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Depth reached</div>
+                    <div class="stat-value">@_result.MaxDepthReached</div>
+                    <div class="stat-sub">limit @_result.MaxDepthLimit</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Devices resolved</div>
+                    <div class="stat-value">@_result.Devices.Count</div>
+                </div>
+            </div>
+
+            @if (_result.Devices.Count > 0)
+            {
+                <div class="stat-label" style="margin-bottom:var(--s2);">
+                    Resolved devices &mdash; heartbeat inherited down the branch
+                </div>
+                <div class="table-wrap" style="margin-bottom:var(--s4);">
+                    <table>
+                        <caption class="visually-hidden">Devices resolved by the recursive walk</caption>
+                        <thead>
+                            <tr>
+                                <th scope="col">Path</th>
+                                <th scope="col">MAC</th>
+                                <th scope="col" class="num">Heartbeat</th>
+                                <th scope="col" class="num">Depth</th>
+                                <th scope="col">Registered</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        @foreach (var device in _result.Devices)
+                        {
+                            <tr>
+                                <td style="font-size:0.82rem; min-width:14rem;">@device.QualifiedPath</td>
+                                <td class="mono" style="font-size:0.78rem;">@device.MacAddress</td>
+                                <td class="num">@device.EffectiveHeartbeatSeconds s</td>
+                                <td class="num">@device.Depth</td>
+                                <td>
+                                    <span class="pill @(device.IsRegistered ? "pill-ok" : "pill-neutral")">
+                                        @(device.IsRegistered ? "Known" : "Unknown")
+                                    </span>
+                                </td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                </div>
+            }
+
+            @if (_result.Issues.Count == 0)
+            {
+                <div class="banner banner-ok" role="status">
+                    <span aria-hidden="true">&#10004;</span>
+                    <span>No structural problems found in this profile.</span>
+                </div>
+            }
+            else
+            {
+                <div class="stat-label" style="margin-bottom:var(--s2);">
+                    @_result.Issues.Count finding@(_result.Issues.Count == 1 ? "" : "s")
+                </div>
+
+                @foreach (var issue in _result.Issues)
+                {
+                    var isError = issue.Severity == "Error";
+                    <div style="padding:var(--s3); border:1px solid var(--border);
+                                border-radius:var(--radius-sm); margin-bottom:var(--s2);
+                                border-left:3px solid @(isError ? "var(--bad)" : "var(--warn)");">
+                        <div style="display:flex; gap:var(--s2); align-items:baseline; flex-wrap:wrap;">
+                            <span class="pill @(isError ? "pill-critical" : "pill-warning")">@issue.Severity</span>
+                            <code style="font-size:0.78rem; color:var(--text-muted);">@issue.Code</code>
+                            <span class="mono" style="margin-left:auto; font-size:0.76rem; color:var(--text-dim);">
+                                @issue.Path
+                            </span>
+                        </div>
+                        <p style="margin:var(--s2) 0 0; font-size:0.85rem; color:var(--text-muted);">
+                            @issue.Message
+                        </p>
+                    </div>
+                }
+            }
+        }
+    </div>
+</div>
+
+@code {
+    private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web)
+    {
+        MaxDepth = SmartXApiClient.MaxJsonDepth
+    };
+
+    private static readonly JsonSerializerOptions Pretty = new(JsonSerializerDefaults.Web)
+    {
+        WriteIndented = true,
+        MaxDepth = SmartXApiClient.MaxJsonDepth
+    };
+
+    private string _profileJson = string.Empty;
+    private ValidateDeploymentResponse? _result;
+    private string? _error;
+    private bool _busy;
+
+    protected override Task OnInitializedAsync() => LoadExampleAsync();
+
+    private async Task LoadExampleAsync()
+    {
+        _error = null;
+        _result = null;
+
+        var example = await Api.GetExampleDeploymentAsync();
+        if (example.Value is not null)
+        {
+            _profileJson = JsonSerializer.Serialize(example.Value, Pretty);
+        }
+    }
+
+    private async Task ValidateAsync()
+    {
+        _error = null;
+        _result = null;
+
+        ValidateDeploymentRequest? request;
+
+        try
+        {
+            request = JsonSerializer.Deserialize<ValidateDeploymentRequest>(_profileJson, Web);
+        }
+        catch (JsonException error)
+        {
+            // A malformed profile is the operator typing, not a fault. Report where the
+            // parser gave up here in the browser, rather than posting it for a generic 400.
+            // The parser's own message is written for developers ("ExpectedStartOf
+            // PropertyNotFound ... BytePositionInLine: 2"). The operator needs where.
+            var line = (error.LineNumber ?? 0) + 1;
+            var column = (error.BytePositionInLine ?? 0) + 1;
+            _error = $" That is not valid JSON - check line {line}, column {column}.";
+            return;
+        }
+
+        if (request?.Root is null)
+        {
+            _error = " The profile needs a root object with a \"root\" property.";
+            return;
+        }
+
+        _busy = true;
+        var result = await Api.ValidateDeploymentAsync(request);
+        _busy = false;
+
+        if (!result.Succeeded)
+        {
+            _error = " " + result.ErrorMessage;
+            return;
+        }
+
+        _result = result.Value;
+    }
+}

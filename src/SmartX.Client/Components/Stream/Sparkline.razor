@@ -1,0 +1,35 @@
+@* A thirty-minute sparkline, scaled to the device's own range so a probe moving a
+   few percent and a meter moving hundreds of watts are both legible. *@
+
+@if (Points is { Count: > 1 })
+{
+    <svg class="sparkline" viewBox="0 0 @Width @Height" width="@Width" height="@Height" aria-hidden="true" focusable="false">
+        <polyline points="@Path" fill="none" stroke="@Colour" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" />
+    </svg>
+}
+
+@code {
+    private const int Width = 84;
+    private const int Height = 22;
+
+    /// <summary>Values, oldest first.</summary>
+    [Parameter] public List<double>? Points { get; set; }
+
+    /// <summary>Stroke colour.</summary>
+    [Parameter] public string Colour { get; set; } = "var(--accent)";
+
+    private string Path
+    {
+        get
+        {
+            var points = Points!;
+            var min = points.Min();
+            var max = points.Max();
+            var span = max - min < 1e-9 ? 1d : max - min;
+            var step = (Width - 2) / (double)(points.Count - 1);
+
+            return string.Join(' ', points.Select((value, i) =>
+                $"{Display.Css(1 + (i * step))},{Display.Css(Height - 2 - ((value - min) / span * (Height - 4)))}"));
+        }
+    }
+}

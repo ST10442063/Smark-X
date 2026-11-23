@@ -1,0 +1,8 @@
+<Router AppAssembly="@typeof(App).Assembly" NotFoundPage="typeof(Pages.NotFound)">
+    <Found Context="routeData">
+        <RouteView RouteData="@routeData" DefaultLayout="@typeof(MainLayout)" />
+        @* Moves focus to the page heading after navigation, so a screen reader
+           announces the new page instead of staying on the link that was clicked. *@
+        <FocusOnNavigate RouteData="@routeData" Selector="h1" />
+    </Found>
+</Router>

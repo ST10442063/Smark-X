@@ -1,0 +1,71 @@
+# Smart-X full stack.
+#
+#   docker compose up --build
+#
+# Then open http://localhost:5090. The console is a Blazor WebAssembly app: it runs
+# in your browser and calls the gateway from there, so the gateway is published on
+# localhost:5080 - the address in src/SmartX.Client/wwwroot/appsettings.json.
+# The device emulator runs alongside and publishes to the gateway over HTTP.
+
+services:
+
+  api:
+    build:
+      context: .
+      dockerfile: src/SmartX.Api/Dockerfile
+    container_name: smartx-api
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      # The console is served from a different origin, so it has to be named
+      # explicitly rather than wildcarded.
+      AllowedWebOrigins__0: http://localhost:5090
+      # For a real deployment, supply the attachment key as a secret instead of
+      # letting the gateway generate one into the keys volume:
+      # Gateway__AttachmentEncryptionKey: ${SMARTX_ATTACHMENT_KEY}
+    ports:
+      # Published because the browser calls the gateway directly.
+      - "5080:8080"
+    volumes:
+      # Encrypted attachment bytes survive a container restart.
+      - smartx-attachments:/app/App_Data/attachments
+      # The key that decrypts them, kept in its own volume.
+      - smartx-keys:/app/App_Data/keys
+    healthcheck:
+      # The console waits on this, so it never starts against a gateway that is
+      # still seeding and shows the offline banner for its first few requests.
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:8080/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+
+  emulator:
+    # The virtual ESP32 fleet. It reaches the gateway exactly as hardware would -
+    # over HTTP to the uplink and downlink - on the compose network, so it needs no
+    # published port of its own.
+    build:
+      context: .
+      dockerfile: src/SmartX.DeviceEmulator/Dockerfile
+    container_name: smartx-emulator
+    command: ["--api", "http://api:8080", "--incidents", "3"]
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  client:
+    build:
+      context: .
+      dockerfile: src/SmartX.Client/Dockerfile
+    container_name: smartx-client
+    ports:
+      - "5090:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  smartx-attachments:
+  smartx-keys:

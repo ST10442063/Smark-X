@@ -1,0 +1,22 @@
+@* How far a learned pattern can be trusted: its confidence as a meter, and the
+   number of times it has been seen, because 2 of 2 and 40 of 50 are not the same
+   evidence even though one reads higher. *@
+
+@if (Value is { } confidence)
+{
+    <span class="confidence" title="@($"Held {confidence * 100:0}% of the time, seen {Support ?? 0} times")">
+        <span class="confidence-track" aria-hidden="true">
+            <span class="confidence-fill" style="width:@Display.Css(confidence * 100)%"></span>
+        </span>
+        <span class="mono">@((confidence * 100).ToString("0"))%</span>
+        <span class="hint">n=@(Support ?? 0)</span>
+    </span>
+}
+
+@code {
+    /// <summary>0 to 1.</summary>
+    [Parameter] public double? Value { get; set; }
+
+    /// <summary>Times the pattern has been seen.</summary>
+    [Parameter] public int? Support { get; set; }
+}

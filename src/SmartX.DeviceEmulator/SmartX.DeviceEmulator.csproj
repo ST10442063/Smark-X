@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    A virtual fleet of ESP32 nodes. It knows the gateway only through the wire
+    contracts in SmartX.Contracts - exactly what a real device's firmware would
+    know - and reaches it only over HTTP.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SmartX.Contracts\SmartX.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>

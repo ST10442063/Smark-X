@@ -1,0 +1,112 @@
+@* A device's timeline, straight from its sorted dictionary on the gateway: one
+   point per minute, already in time order, so drawing it is a single pass with no
+   sorting. The band is each minute's min-max range, the line its mean, and a red
+   mark is a minute that held a critical reading. *@
+
+@if (Timeline is null || Timeline.Points.Count < 2)
+{
+    <div class="empty" style="padding:var(--s5) var(--s4);">
+        <p>@(Timeline is null ? "Choose a device to see its timeline." : "Not enough history in this window yet.")</p>
+    </div>
+}
+else
+{
+    <svg class="timeline" viewBox="0 0 @W @H" preserveAspectRatio="none" role="img"
+         aria-label="@($"{Timeline.DisplayName}, {Timeline.Points.Count} minutes, from {Low:0.#} to {High:0.#} {Timeline.Unit}")">
+        @if (Threshold is { } line && line >= Low && line <= High)
+        {
+            @* Wrapped in a group: directly inside a Razor code block, <text> would be
+               read as Razor's own text directive rather than the SVG element. *@
+            <g>
+                <line x1="@Left" x2="@(W - Right)" y1="@Y(line)" y2="@Y(line)" class="timeline-threshold" />
+                <text x="@(W - Right - 4)" y="@Display.Css(YRaw(line) - 4)" text-anchor="end" class="timeline-label limit-label">
+                    @line.ToString("0.#") @Timeline.Unit limit
+                </text>
+            </g>
+        }
+
+        <polygon points="@Band" class="timeline-band" />
+        <polyline points="@MeanLine" class="timeline-mean" />
+
+        @for (var i = 0; i < Timeline.Points.Count; i++)
+        {
+            var point = Timeline.Points[i];
+            if (point.Critical > 0)
+            {
+                <circle cx="@X(i)" cy="@Y(point.Minimum)" r="4" class="timeline-critical">
+                    <title>@Display.Local(point.StartUtc, "HH:mm") - @point.Critical critical reading(s), low @point.Minimum.ToString("0.#") @Timeline.Unit</title>
+                </circle>
+            }
+        }
+
+        <text x="@Left" y="12" class="timeline-label">@High.ToString("0.#") @Timeline.Unit</text>
+        <text x="@Left" y="@(H - Bottom + 14)" class="timeline-label">@Low.ToString("0.#")</text>
+        <text x="@Left" y="@(H - 4)" class="timeline-label">@Display.Local(Timeline.Points[0].StartUtc, "HH:mm")</text>
+        <text x="@(W - Right)" y="@(H - 4)" text-anchor="end" class="timeline-label">@Display.Local(Timeline.Points[^1].StartUtc, "HH:mm")</text>
+    </svg>
+}
+
+@code {
+    private const double W = 640;
+    private const double H = 190;
+    private const double Left = 4;
+    private const double Right = 4;
+    private const double Top = 18;
+    private const double Bottom = 26;
+
+    /// <summary>The timeline to draw.</summary>
+    [Parameter] public TimelineResponse? Timeline { get; set; }
+
+    /// <summary>A safety limit to draw across the chart, if it falls inside the range.</summary>
+    [Parameter] public double? Threshold { get; set; }
+
+    private double _low;
+    private double _high;
+
+    private double Low => _low;
+
+    private double High => _high;
+
+    protected override void OnParametersSet()
+    {
+        if (Timeline is not { Points.Count: > 1 } timeline)
+        {
+            return;
+        }
+
+        var low = timeline.Points.Min(point => point.Minimum);
+        var high = timeline.Points.Max(point => point.Maximum);
+        var span = Math.Max(1e-6, high - low);
+
+        // Stretch the range to show the safety limit when it is close enough to
+        // matter - a probe at 46% does not need the 20% floor squashing its line.
+        if (Threshold is { } limit && limit >= low - span && limit <= high + span)
+        {
+            low = Math.Min(low, limit);
+            high = Math.Max(high, limit);
+        }
+
+        var pad = Math.Max(1e-6, high - low) * 0.08;
+        _low = low - pad;
+        _high = high + pad;
+    }
+
+    private string X(int index) => Display.Css(Left + (index * (W - Left - Right) / Math.Max(1, Timeline!.Points.Count - 1)));
+
+    private string Y(double value) => Display.Css(YRaw(value));
+
+    private double YRaw(double value)
+        => Top + ((High - value) / Math.Max(1e-6, High - Low) * (H - Top - Bottom));
+
+    private string MeanLine => string.Join(' ', Timeline!.Points.Select((point, i) => $"{X(i)},{Y(point.Mean)}"));
+
+    private string Band
+    {
+        get
+        {
+            var upper = Timeline!.Points.Select((point, i) => $"{X(i)},{Y(point.Maximum)}");
+            var lower = Timeline.Points.Select((point, i) => $"{X(i)},{Y(point.Minimum)}").Reverse();
+            return string.Join(' ', upper.Concat(lower));
+        }
+    }
+}

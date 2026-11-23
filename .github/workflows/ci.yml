@@ -1,0 +1,57 @@
+# Builds the whole Smart-X solution and runs every test on each push and pull
+# request, so a change that breaks the gateway, the console, the emulator or any
+# data structure is caught before it is merged rather than in a demo.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore SmartX.sln
+
+      # Warnings are errors here: the solution builds clean locally, and CI keeps it so.
+      - name: Build
+        run: dotnet build SmartX.sln --no-restore --configuration Release -warnaserror
+
+      - name: Test
+        run: >
+          dotnet test SmartX.sln --no-build --configuration Release
+          --logger "trx;LogFileName=results.trx"
+          --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Proves the three Dockerfiles still build after a change; nothing is pushed.
+      - name: Build images
+        run: docker compose build

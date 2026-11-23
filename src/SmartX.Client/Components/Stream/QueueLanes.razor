@@ -1,0 +1,84 @@
+@* The two-lane intake, drawn as two lanes. The priority lane is short because it is
+   drained first; the standard lane's bar is scaled to its own high-water mark so a
+   backlog is visible at a glance rather than as a number. *@
+
+<div class="lanes" aria-label="Ingestion queues">
+    <div class="lane lane-priority">
+        <div class="lane-head">
+            <span class="lane-name">Priority lane</span>
+            <span class="lane-kind mono">PriorityQueue&lt;T, (severity, seq)&gt;</span>
+        </div>
+        <div class="lane-track" role="img" aria-label="@($"{Stats?.PriorityDepth ?? 0} critical packets waiting")">
+            <div class="lane-fill" style="width:@Width(Stats?.PriorityDepth ?? 0, 10)%"></div>
+        </div>
+        <div class="lane-foot">
+            <span><strong class="mono">@(Stats?.PriorityDepth ?? 0)</strong> waiting</span>
+            <span><strong class="mono">@((Stats?.PriorityProcessed ?? 0).ToString("N0"))</strong> processed</span>
+            <span>mean wait <strong class="mono">@Ms(Stats?.PriorityMeanWaitMs)</strong></span>
+        </div>
+    </div>
+
+    <div class="lane lane-standard">
+        <div class="lane-head">
+            <span class="lane-name">Standard lane</span>
+            <span class="lane-kind mono">Queue&lt;T&gt; &middot; FIFO</span>
+        </div>
+        <div class="lane-track" role="img" aria-label="@($"{Stats?.StandardDepth ?? 0} routine packets waiting")">
+            <div class="lane-fill" style="width:@Width(Stats?.StandardDepth ?? 0, Math.Max(50, Stats?.StandardHighWater ?? 0))%"></div>
+        </div>
+        <div class="lane-foot">
+            <span><strong class="mono">@((Stats?.StandardDepth ?? 0).ToString("N0"))</strong> waiting</span>
+            <span><strong class="mono">@((Stats?.StandardProcessed ?? 0).ToString("N0"))</strong> processed</span>
+            <span>mean wait <strong class="mono">@Ms(Stats?.StandardMeanWaitMs)</strong></span>
+            @if ((Stats?.StandardShed ?? 0) > 0)
+            {
+                <span style="color:var(--warn)"><strong class="mono">@Stats!.StandardShed.ToString("N0")</strong> shed</span>
+            }
+        </div>
+    </div>
+</div>
+
+<div class="grid grid-stats" style="margin-top:var(--s4);">
+    <div class="stat">
+        <div class="stat-label">Throughput</div>
+        <div class="stat-value">@((Stats?.ThroughputPerSecond ?? 0).ToString("0.#"))<span class="unit">/s</span></div>
+        <div class="stat-sub">@(Stats?.ProcessingBudgetMs ?? 0) ms budget per packet</div>
+    </div>
+    <div class="stat">
+        <div class="stat-label">Last critical</div>
+        @if (Stats?.LastPriorityWaitMs is { } wait)
+        {
+            <div class="stat-value">@Ms(wait)</div>
+            <div class="stat-sub">waited, ahead of @(Stats.LastPriorityOvertook ?? 0) queued</div>
+        }
+        else
+        {
+            <div class="stat-value">&mdash;</div>
+            <div class="stat-sub">none yet</div>
+        }
+    </div>
+    <div class="stat">
+        <div class="stat-label">Bypasses</div>
+        <div class="stat-value">@((Stats?.Bypasses ?? 0).ToString("N0"))</div>
+        <div class="stat-sub">@((Stats?.PacketsOvertaken ?? 0).ToString("N0")) packets overtaken</div>
+    </div>
+    <div class="stat">
+        <div class="stat-label">Duplicates absorbed</div>
+        <div class="stat-value">@(((Stats?.AlertDuplicatesSuppressed ?? 0) + (Stats?.OutageDuplicatesSuppressed ?? 0)).ToString("N0"))</div>
+        <div class="stat-sub" title="Repeat alerts and repeat disconnects the HashSets refused">
+            @(Stats?.AlertsActive ?? 0) alerts &middot; @(Stats?.NodesDown ?? 0) nodes down
+        </div>
+    </div>
+</div>
+
+@code {
+    /// <summary>The latest queue statistics.</summary>
+    [Parameter] public QueueStatsResponse? Stats { get; set; }
+
+    private static string Width(int value, int scale)
+        => Display.Css(scale <= 0 ? 0 : Math.Clamp(value * 100d / scale, value > 0 ? 2 : 0, 100));
+
+    private static string Ms(double? value) => value is { } ms
+        ? ms >= 1000 ? $"{ms / 1000:0.0} s" : $"{ms:0.#} ms"
+        : "—";
+}

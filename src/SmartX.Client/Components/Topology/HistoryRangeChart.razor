@@ -1,0 +1,116 @@
+@*
+    A history window as a chart: each slice's min-max band and mean, one slice per
+    O(log n) summary from the AVL tree. Same conventions as the Command Stream's
+    TimelineChart - inline SVG, coordinates through Display.Css - with a few
+    gridlines and time labels, because a historical window is read against the clock.
+*@
+
+@if (Series is null || Series.Buckets.All(bucket => bucket.Count == 0))
+{
+    <p class="empty">No readings in this window.</p>
+}
+else
+{
+    <svg class="hist-chart" viewBox="0 0 @W @H" role="img"
+         aria-label="Readings from @Display.Local(Series.FromUtc, "HH:mm") to @Display.Local(Series.ToUtc, "HH:mm"), between @Low.ToString("0.#", CultureInfo.InvariantCulture) and @High.ToString("0.#", CultureInfo.InvariantCulture) @Series.Unit">
+
+        @for (var i = 0; i <= 4; i++)
+        {
+            var value = Low + ((High - Low) * i / 4);
+            var y = Y(value);
+            <g>
+                <line class="hist-grid" x1="@Left" y1="@Display.Css(y)" x2="@(W - Right)" y2="@Display.Css(y)" />
+                <text class="hist-axis" x="@(Left - 6)" y="@Display.Css(y + 4)" text-anchor="end">@value.ToString(Format, CultureInfo.InvariantCulture)</text>
+            </g>
+        }
+
+        @for (var i = 0; i <= 4; i++)
+        {
+            var at = Series.FromUtc + ((Series.ToUtc - Series.FromUtc) * i / 4);
+            <g><text class="hist-axis" x="@Display.Css(Left + ((W - Left - Right) * i / 4.0))" y="@(H - 6)" text-anchor="middle">@Display.Local(at, "HH:mm")</text></g>
+        }
+
+        @foreach (var segment in Segments)
+        {
+            <polygon class="hist-band" points="@Band(segment)" />
+            <polyline class="hist-mean" points="@Mean(segment)" />
+        }
+    </svg>
+}
+
+@code {
+    private const int W = 720;
+    private const int H = 220;
+    private const int Left = 52;
+    private const int Right = 10;
+    private const int Top = 10;
+    private const int Bottom = 26;
+
+    [Parameter, EditorRequired] public HistorySeriesResponse? Series { get; set; }
+
+    private double Low { get; set; }
+
+    private double High { get; set; }
+
+    private string Format => High - Low < 10 ? "0.0" : "0";
+
+    /// <summary>Runs of consecutive slices that hold readings; a gap breaks the line rather than bridging it.</summary>
+    private List<List<(int Index, HistoryBucketResponse Bucket)>> Segments { get; set; } = [];
+
+    protected override void OnParametersSet()
+    {
+        Segments = [];
+
+        if (Series is null)
+        {
+            return;
+        }
+
+        var filled = Series.Buckets.Where(bucket => bucket.Count > 0).ToList();
+        if (filled.Count == 0)
+        {
+            return;
+        }
+
+        Low = filled.Min(bucket => bucket.Minimum);
+        High = filled.Max(bucket => bucket.Maximum);
+        var pad = Math.Max((High - Low) * 0.08, 0.5);
+        Low -= pad;
+        High += pad;
+
+        List<(int, HistoryBucketResponse)>? run = null;
+        for (var i = 0; i < Series.Buckets.Count; i++)
+        {
+            var bucket = Series.Buckets[i];
+            if (bucket.Count == 0)
+            {
+                run = null;
+                continue;
+            }
+
+            if (run is null)
+            {
+                run = [];
+                Segments.Add(run);
+            }
+
+            run.Add((i, bucket));
+        }
+    }
+
+    private double X(int index)
+        => Left + ((W - Left - Right) * (index + 0.5) / Math.Max(1, Series!.Buckets.Count));
+
+    private double Y(double value)
+        => Top + ((High - value) / Math.Max(1e-9, High - Low) * (H - Top - Bottom));
+
+    private string Band(List<(int Index, HistoryBucketResponse Bucket)> segment)
+    {
+        var upper = segment.Select(point => $"{Display.Css(X(point.Index))},{Display.Css(Y(point.Bucket.Maximum))}");
+        var lower = segment.AsEnumerable().Reverse().Select(point => $"{Display.Css(X(point.Index))},{Display.Css(Y(point.Bucket.Minimum))}");
+        return string.Join(' ', upper.Concat(lower));
+    }
+
+    private string Mean(List<(int Index, HistoryBucketResponse Bucket)> segment)
+        => string.Join(' ', segment.Select(point => $"{Display.Css(X(point.Index))},{Display.Css(Y(point.Bucket.Mean))}"));
+}

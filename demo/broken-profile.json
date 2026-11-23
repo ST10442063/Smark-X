@@ -1,0 +1,51 @@
+{
+  "root": {
+    "id": "facility-a",
+    "name": "Facility A",
+    "kind": "Facility",
+    "heartbeatIntervalSeconds": 30,
+    "children": [
+      {
+        "id": "zone-1",
+        "name": "Zone 1",
+        "kind": "Zone",
+        "children": [
+          {
+            "id": "sub-b",
+            "name": "Sub-Zone B",
+            "kind": "SubZone",
+            "children": [
+              {
+                "id": "node-01",
+                "name": "NODE-01",
+                "kind": "Device",
+                "macAddress": "A4:CF:12:00:00:00",
+                "children": []
+              },
+              {
+                "id": "node-99",
+                "name": "NODE-99",
+                "kind": "Device",
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "facility-b",
+            "name": "Facility B",
+            "kind": "Facility",
+            "children": [
+              {
+                "id": "node-01",
+                "name": "NODE-01 copy",
+                "kind": "Device",
+                "macAddress": "A4:CF:12:00:01:25",
+                "children": []
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

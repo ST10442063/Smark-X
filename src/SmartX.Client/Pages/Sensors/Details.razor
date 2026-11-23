@@ -1,0 +1,318 @@
+@page "/sensors/{Id:guid}"
+@inject SmartXApiClient Api
+@inject NavigationManager Navigation
+@inject ToastService Toasts
+
+<PageTitle>@(_sensor?.DisplayName ?? "Sensor") &middot; Smart-X Gateway</PageTitle>
+
+@if (_sensor is null)
+{
+    <div class="page-head"><h1>Sensor profile</h1></div>
+    <div class="card"><p class="loading-line">Loading the sensor profile&hellip;</p></div>
+}
+else
+{
+    var sensor = _sensor;
+    var history = _history;
+
+    <div class="page-head">
+        <div style="display:flex; align-items:center; gap:var(--s3); flex-wrap:wrap;">
+            <h1 style="margin:0;">@sensor.DisplayName</h1>
+            <span class="pill @Display.PillFor(sensor.Status)">
+                <span class="dot" aria-hidden="true"></span>@sensor.Status
+            </span>
+        </div>
+        <p style="margin-top:var(--s2);">
+            <span class="mono">@sensor.MacAddress</span> &middot; @sensor.QualifiedPath
+            &middot; firmware @sensor.FirmwareVersion
+        </p>
+    </div>
+
+    <div class="grid grid-stats" style="margin-bottom:var(--s4);">
+        <div class="stat">
+            <div class="stat-label">Latest reading</div>
+            <div class="stat-value">@(sensor.LatestReading ?? "—")</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Packets received</div>
+            <div class="stat-value">@sensor.PacketsReceived.ToString("N0")</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Last seen</div>
+            <div class="stat-value" style="font-size:1.1rem;">
+                @(sensor.SecondsSinceLastSeen is { } seconds ? $"{seconds:N0}s ago" : "never")
+            </div>
+            <div class="stat-sub">heartbeat every @sensor.HeartbeatIntervalSeconds s</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Attachments</div>
+            <div class="stat-value">@_attachments.Count</div>
+        </div>
+    </div>
+
+    <div class="grid grid-2">
+
+        @* ---------------- Telemetry history ---------------- *@
+        <div class="card">
+            <div class="card-head">
+                <h2>Telemetry history</h2>
+                <span class="hint">
+                    @Display.Count(history?.TotalReadings ?? 0, "reading")
+                    across @Display.Count(history?.BatchCount ?? 0, "batch", "batches")
+                </span>
+            </div>
+
+            @if (history is null || history.Readings.Count == 0)
+            {
+                <div class="empty">
+                    <h3>No telemetry yet</h3>
+                    <p>Publish or generate readings from the telemetry workbench.</p>
+                    <a class="btn btn-primary" href="telemetry?sensorId=@sensor.Id">Open workbench</a>
+                </div>
+            }
+            else
+            {
+                <div class="grid grid-stats" style="margin-bottom:var(--s4);">
+                    <div class="stat">
+                        <div class="stat-label">Mean</div>
+                        <div class="stat-value" style="font-size:1.1rem;">@history.Mean.ToString("0.##")</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Minimum</div>
+                        <div class="stat-value" style="font-size:1.1rem;">@history.Minimum.ToString("0.##")</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Maximum</div>
+                        <div class="stat-value" style="font-size:1.1rem;">@history.Maximum.ToString("0.##")</div>
+                    </div>
+                </div>
+
+                @* The overloaded operators, shown operating on this node's real data. *@
+                @if (history.AggregateOfLastTwo is not null)
+                {
+                    <div class="inset" style="margin-bottom:var(--s4);">
+                        <div class="stat-label" style="margin-bottom:var(--s2);">
+                            Operator overloading, on the last two readings
+                        </div>
+                        <div class="mono" style="font-size:0.84rem; color:var(--text-muted);">
+                            latest + previous = <span style="color:var(--accent)">@history.AggregateOfLastTwo</span><br />
+                            latest − previous = <span style="color:var(--accent)">@history.DeltaOfLastTwo</span>
+                        </div>
+                    </div>
+                }
+
+                <div class="table-wrap" style="max-height:320px; overflow-y:auto;">
+                    <table>
+                        <caption class="visually-hidden">Recent telemetry readings</caption>
+                        <thead>
+                            <tr>
+                                <th scope="col">Captured</th>
+                                <th scope="col" class="num">Reading</th>
+                                <th scope="col" class="num">z-score</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        @foreach (var reading in Enumerable.Reverse(history.Readings).Take(40))
+                        {
+                            <tr>
+                                <td class="mono" style="font-size:0.8rem;">@Display.Local(reading.TimestampUtc)</td>
+                                <td class="num">@reading.Formatted</td>
+                                <td class="num" style="color:@(reading.IsAnomalous ? "var(--bad)" : "var(--text-dim)")">
+                                    @reading.ZScore.ToString("0.0")
+                                </td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                </div>
+
+                @* The jagged layout, evidenced rather than asserted. *@
+                <div style="margin-top:var(--s4); padding-top:var(--s4); border-top:1px solid var(--border);">
+                    <div class="stat-label" style="margin-bottom:var(--s2);">Jagged batch storage</div>
+                    <p style="color:var(--text-muted); font-size:0.84rem; margin-bottom:var(--s2);">
+                        Batch lengths:
+                        <span class="mono">
+                            [@string.Join(", ", history.BatchLengths.Take(14))@(history.BatchLengths.Count > 14 ? ", …" : "")]
+                        </span>
+                    </p>
+                    <p style="color:var(--text-dim); font-size:0.82rem; margin:0;">
+                        Holding <strong>@history.TotalReadings.ToString("N0")</strong> readings.
+                        A rectangular array sized to the longest batch would have needed
+                        <strong>@history.RectangularEquivalentSlots.ToString("N0")</strong> slots.
+                    </p>
+                </div>
+            }
+        </div>
+
+        @* ---------------- Attachments ---------------- *@
+        <div class="card" style="align-self:start;">
+            <div class="card-head">
+                <h2>Configuration and log files</h2>
+                @if (_policy is { } policy)
+                {
+                    <span class="hint">Up to @policy.MaxSizeDisplay</span>
+                }
+            </div>
+
+            <form @onsubmit="UploadAsync">
+                <div class="field">
+                    <label for="file">Attach a device file</label>
+                    @* InputFile is re-created after each upload (by changing its key) so the
+                       browser forgets the previous selection. *@
+                    <InputFile id="file" @key="_fileInputKey" OnChange="OnFileChosen"
+                               accept="@(_policy is null ? null : string.Join(",", _policy.AllowedExtensions))" />
+                    <span class="help">
+                        @if (_policy is { } p)
+                        {
+                            <text>Accepted: @string.Join(" ", p.AllowedExtensions). </text>
+                        }
+                        Sent as multipart form data; the gateway streams it through AES-256-GCM
+                        before a byte reaches disk.
+                    </span>
+                </div>
+
+                <button type="submit" class="btn btn-primary" disabled="@(_file is null || _uploading)">
+                    @(_uploading ? "Encrypting and uploading…" : "Attach file")
+                </button>
+            </form>
+
+            <div style="margin-top:var(--s5);">
+                @if (_attachments.Count == 0)
+                {
+                    <p style="color:var(--text-dim); font-size:0.88rem; margin:0;">
+                        Nothing attached to this profile yet. Deployment photos, hardware logs and
+                        configuration dumps all belong here.
+                    </p>
+                }
+                else
+                {
+                    <div class="table-wrap">
+                        <table>
+                            <caption class="visually-hidden">Attached files</caption>
+                            <thead>
+                                <tr>
+                                    <th scope="col">File</th>
+                                    <th scope="col" class="num">Size</th>
+                                    <th scope="col">Uploaded</th>
+                                    <th scope="col"><span class="visually-hidden">Download</span></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                            @foreach (var attachment in _attachments)
+                            {
+                                <tr @key="attachment.Id">
+                                    <td>
+                                        <span aria-hidden="true">@(attachment.IsImage ? "🖼" : "📄")</span>
+                                        @attachment.FileName
+                                        <div style="font-size:0.7rem; color:var(--text-dim); display:flex; gap:var(--s2); flex-wrap:wrap;">
+                                            @if (attachment.Encryption is { Length: > 0 })
+                                            {
+                                                <span title="Encrypted at rest on the gateway" style="color:var(--ok);">
+                                                    &#128274; @attachment.Encryption
+                                                </span>
+                                            }
+                                            <span class="mono" title="SHA-256 of the original file">
+                                                sha256 @attachment.Sha256[..Math.Min(16, attachment.Sha256.Length)]…
+                                            </span>
+                                        </div>
+                                    </td>
+                                    <td class="num">@attachment.SizeDisplay</td>
+                                    <td style="font-size:0.8rem; color:var(--text-muted);">
+                                        @Display.Local(attachment.UploadedAtUtc, "dd MMM HH:mm")
+                                    </td>
+                                    <td>
+                                        <a class="btn btn-sm btn-quiet" target="_blank" rel="noopener"
+                                           href="@(Api.BaseUrl + attachment.DownloadUrl)">Open</a>
+                                    </td>
+                                </tr>
+                            }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+
+    <div style="margin-top:var(--s5); display:flex; gap:var(--s3); flex-wrap:wrap;">
+        <a class="btn btn-quiet" href="sensors">Back to registry</a>
+        <a class="btn btn-primary" href="telemetry?sensorId=@sensor.Id">Publish telemetry for this node</a>
+        @* Final PoE: the same node on the mesh map, and its full history from the AVL tree. *@
+        <a class="btn" href="@($"topology?mac={Uri.EscapeDataString(sensor.MacAddress)}")">View on mesh map</a>
+        <a class="btn" href="@($"topology/history?mac={Uri.EscapeDataString(sensor.MacAddress)}")">Telemetry history</a>
+    </div>
+}
+
+@code {
+    /// <summary>Gateway-assigned key of the sensor to show.</summary>
+    [Parameter]
+    public Guid Id { get; set; }
+
+    private SensorResponse? _sensor;
+    private TelemetryHistoryResponse? _history;
+    private List<AttachmentResponse> _attachments = [];
+    private AttachmentPolicyResponse? _policy;
+    private IBrowserFile? _file;
+    private bool _uploading;
+    private Guid _fileInputKey = Guid.NewGuid();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _sensor = null;
+
+        var sensor = await Api.GetSensorAsync(Id);
+
+        if (!sensor.Succeeded)
+        {
+            if (!sensor.IsUnreachable)
+            {
+                Toasts.Error(sensor.ErrorMessage);
+            }
+
+            Navigation.NavigateTo("sensors");
+            return;
+        }
+
+        // Three independent reads, awaited together so the page costs one round
+        // trip of latency instead of three.
+        var historyTask = Api.GetHistoryAsync(Id, take: 60);
+        var attachmentsTask = Api.ListAttachmentsAsync(Id);
+        var policyTask = Api.GetAttachmentPolicyAsync();
+        await Task.WhenAll(historyTask, attachmentsTask, policyTask);
+
+        _history = (await historyTask).Value;
+        _attachments = (await attachmentsTask).Value ?? [];
+        _policy = (await policyTask).Value;
+        _sensor = sensor.Value;
+    }
+
+    private void OnFileChosen(InputFileChangeEventArgs args) => _file = args.File;
+
+    private async Task UploadAsync()
+    {
+        if (_file is null)
+        {
+            Toasts.Error("Choose a file before attaching it.");
+            return;
+        }
+
+        _uploading = true;
+
+        var limit = _policy?.MaxSizeBytes ?? 10 * 1024 * 1024;
+        var result = await Api.UploadAttachmentAsync(Id, _file, limit);
+
+        _uploading = false;
+
+        if (!result.Succeeded)
+        {
+            Toasts.Error(result.ErrorMessage);
+            return;
+        }
+
+        Toasts.Success($"Attached {result.Value!.FileName} ({result.Value.SizeDisplay}), encrypted with {result.Value.Encryption}.");
+
+        _file = null;
+        _fileInputKey = Guid.NewGuid();
+        _attachments = (await Api.ListAttachmentsAsync(Id)).Value ?? _attachments;
+    }
+}

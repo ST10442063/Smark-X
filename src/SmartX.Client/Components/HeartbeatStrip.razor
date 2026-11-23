@@ -1,0 +1,80 @@
+@*
+    One node on the Anomaly Radar. One bar per reading: height from the normalised
+    value, colour from that reading's z-score, so the shape of the signal and the
+    location of the problem are the same picture. A silent node renders as a flat
+    grey band, which is visually unmistakable against a live one.
+*@
+
+@{
+    var isSilent = Strip.Status == "Silent";
+    var stale = Strip.SecondsSinceLastSeen is { } seen && seen > Strip.HeartbeatIntervalSeconds;
+    var barWidth = Strip.Points.Count > 0 ? 100d / Strip.Points.Count : 100d;
+    var label = isSilent
+        ? $"{Strip.DisplayName} is not reporting."
+        : $"{Strip.DisplayName}: last {Strip.Points.Count} readings, latest {Strip.LatestReading}, {Strip.OpenAnomalies} open alerts.";
+}
+
+<div class="strip" style="padding:var(--s3) 0; border-bottom:1px solid var(--border);">
+
+    <div style="display:flex; align-items:baseline; gap:var(--s2); flex-wrap:wrap;">
+        <a href="sensors/@Strip.SensorId" style="font-weight:600; font-size:0.9rem;">@Strip.DisplayName</a>
+
+        <span class="pill @Display.PillFor(Strip.Status)">
+            <span class="dot" aria-hidden="true"></span>@Strip.Status
+        </span>
+
+        @if (Strip.OpenAnomalies > 0)
+        {
+            <span class="pill pill-warning">@Strip.OpenAnomalies open</span>
+        }
+
+        <span class="mono" style="margin-left:auto; font-size:0.82rem; color:var(--text-muted);">
+            @Strip.LatestReading
+        </span>
+    </div>
+
+    <div style="color:var(--text-dim); font-size:0.74rem; margin:2px 0 var(--s2);">
+        @Strip.QualifiedPath &middot;
+        @if (Strip.SecondsSinceLastSeen is { } seconds)
+        {
+            <span style="color:@(stale ? "var(--warn)" : "var(--text-dim)")">
+                last seen @seconds.ToString("N0")s ago
+            </span>
+        }
+        else
+        {
+            <span style="color:var(--bad)">never reported</span>
+        }
+    </div>
+
+    <div class="strip-bars" role="img" aria-label="@label">
+        @if (Strip.Points.Count == 0)
+        {
+            <div style="width:100%; height:2px; background:var(--border-strong); align-self:center;"></div>
+        }
+        else
+        {
+            @for (var i = 0; i < Strip.Points.Count; i++)
+            {
+                var z = i < Strip.ZScores.Count ? Math.Abs(Strip.ZScores[i]) : 0d;
+                var colour = isSilent ? "var(--text-dim)"
+                    : z >= 3 ? "var(--bad)"
+                    : z >= 2 ? "var(--warn)"
+                    : "var(--accent-dim)";
+
+                <div style="flex:1 1 @Display.Css(barWidth)%;
+                            min-width:1px;
+                            height:@Display.Css(Math.Max(8d, Strip.Points[i] * 100d))%;
+                            background:@colour;
+                            opacity:@(isSilent ? "0.35" : "1");
+                            border-radius:1px;"></div>
+            }
+        }
+    </div>
+</div>
+
+@code {
+    /// <summary>The node's recent readings and state.</summary>
+    [Parameter, EditorRequired]
+    public HeartbeatStripResponse Strip { get; set; } = default!;
+}

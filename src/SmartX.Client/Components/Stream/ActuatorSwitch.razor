@@ -1,0 +1,33 @@
+@* A relay switch that tells the truth about where the command is. It shows the
+   state the operator asked for straight away, but marks it pending until the
+   device acknowledges - a pump that has been told to start is not the same as a
+   pump that has started. *@
+
+<button type="button"
+        class="switch @(On ? "is-on" : "is-off") @(Device.AwaitingConfirmation ? "is-pending" : null)"
+        role="switch"
+        aria-checked="@(On ? "true" : "false")"
+        aria-label="@($"{Device.DisplayName}: {(On ? "on" : "off")}{(Device.AwaitingConfirmation ? ", waiting for the device to confirm" : string.Empty)}. Switch {(On ? "off" : "on")}.")"
+        title="@Title"
+        disabled="@Busy"
+        @onclick="() => OnSwitch.InvokeAsync(!On)">
+    <span class="switch-knob" aria-hidden="true"></span>
+    <span class="switch-label">@(Device.AwaitingConfirmation ? (On ? "ON…" : "OFF…") : On ? "ON" : "OFF")</span>
+</button>
+
+@code {
+    /// <summary>The actuator.</summary>
+    [Parameter, EditorRequired] public DeviceLiveResponse Device { get; set; } = default!;
+
+    /// <summary>Raised with the state the operator wants.</summary>
+    [Parameter] public EventCallback<bool> OnSwitch { get; set; }
+
+    /// <summary>True while a request is in flight.</summary>
+    [Parameter] public bool Busy { get; set; }
+
+    private bool On => Device.DesiredState ?? Device.ReportedState ?? false;
+
+    private string Title => Device.AwaitingConfirmation
+        ? $"Commanded {(On ? "ON" : "OFF")}; the device still reports {(Device.ReportedState == true ? "ON" : "OFF")}. Waiting for it to collect and acknowledge."
+        : $"Reported {(On ? "ON" : "OFF")} by the device.";
+}

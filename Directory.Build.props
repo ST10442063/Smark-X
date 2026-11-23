@@ -1,0 +1,22 @@
+<Project>
+
+  <!--
+    Shared build settings for every Smart-X project.
+    Keeping these in one place guarantees the API, the Blazor WebAssembly client
+    and the class libraries all compile under the same language rules.
+  -->
+  <PropertyGroup>
+    <!-- .NET 10, as the brief specifies for the backend backbone. The client is
+         pinned to the same framework so both tiers share one runtime version. -->
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- CS1591 = "missing XML comment"; we document the marked data structures,
+         not every auto-property, so this one warning is suppressed. -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+</Project>

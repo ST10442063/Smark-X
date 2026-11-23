@@ -1,0 +1,595 @@
+@page "/topology"
+@implements IDisposable
+@inject TopologyState State
+@inject SmartXApiClient Api
+@inject StreamConnection Stream
+@inject ToastService Toasts
+@inject NavigationManager Navigation
+
+<PageTitle>Network Topology &middot; Smart-X Gateway</PageTitle>
+
+<div class="page-head">
+    <h1>Network Topology and Mesh Routing</h1>
+    <p>
+        The mesh as a graph: every ESP32 node a vertex on the site plan, every wireless link an
+        edge weighted by its ETX &mdash; the expected transmissions, and so the energy, to get one
+        packet across it. The highlighted backbone is the minimum spanning tree: the most
+        power-efficient way to connect every node to the gateway. Select a node to trace its
+        route, or fail it and watch the mesh heal.
+    </p>
+</div>
+
+@if (_mesh is { } mesh)
+{
+    <div class="grid grid-stats topo-stats">
+        <div class="stat">
+            <div class="stat-label">Reachable</div>
+            <div class="stat-value" style="color:var(--ok)">@mesh.Stats.Reachable<span class="unit">/ @mesh.Stats.Nodes</span></div>
+            <div class="stat-sub">by BFS from the gateway, @mesh.Stats.MaxHops hops at most</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Down</div>
+            <div class="stat-value" style="color:@(mesh.Stats.DownNodes > 0 ? "var(--bad)" : "var(--ok)")">@mesh.Stats.DownNodes</div>
+            <div class="stat-sub">silent or failed from here</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Stranded</div>
+            <div class="stat-value" style="color:@(mesh.Stats.StrandedNodes > 0 ? "var(--bad)" : "var(--ok)")">@mesh.Stats.StrandedNodes</div>
+            <div class="stat-sub">up, but no route home</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Critical relays</div>
+            <div class="stat-value" style="color:@(mesh.Stats.CriticalRelays > 0 ? "var(--warn)" : "var(--ok)")">@mesh.Stats.CriticalRelays</div>
+            <div class="stat-sub">articulation points</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Tree cost</div>
+            <div class="stat-value">@mesh.Stats.TreeCost.ToString("0.00", CultureInfo.InvariantCulture)<span class="unit">ETX</span></div>
+            <div class="stat-sub">@TreeCostNote(mesh.Stats)</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Computed in</div>
+            <div class="stat-value">@Micro(mesh.Stats.ComputeMicroseconds)</div>
+            <div class="stat-sub">@mesh.Stats.Algorithm, BFS and Tarjan over @Display.Count(mesh.Stats.Links, "link")</div>
+        </div>
+    </div>
+}
+
+<div class="card topo-map-card">
+    <div class="card-head">
+        <h2>Mesh map</h2>
+        <span class="hint">@(_mesh is null ? "" : $"Updated {Display.Local(_mesh.GeneratedAtUtc, "HH:mm:ss")}")</span>
+    </div>
+
+    <div class="filter-bar">
+        <form class="field topo-search" @onsubmit="SearchAsync" @onsubmit:preventDefault>
+            <label for="node-search" class="visually-hidden">Find a node by MAC or name</label>
+            <input id="node-search" type="search" list="node-options" placeholder="Trace a node: A4:CF:12:00:05:B9 or Valve 06"
+                   @bind="_search" />
+            <datalist id="node-options">
+                @foreach (var node in Nodes)
+                {
+                    <option value="@node.Mac">@node.Name</option>
+                }
+            </datalist>
+        </form>
+        <button type="button" class="btn btn-sm btn-primary" @onclick="SearchAsync">Trace</button>
+
+        <div class="chips" role="group" aria-label="Spanning-tree algorithm">
+            <button type="button" class="chip @(State.Algorithm == "Prim" ? "is-on" : null)" @onclick="@(() => SetAlgorithmAsync("Prim"))">Prim</button>
+            <button type="button" class="chip @(State.Algorithm == "Kruskal" ? "is-on" : null)" @onclick="@(() => SetAlgorithmAsync("Kruskal"))">Kruskal</button>
+        </div>
+        <div class="chips" role="group" aria-label="Map options">
+            <button type="button" class="chip @(State.ShowAllLinks ? "is-on" : null)" @onclick="ToggleLinks">All links</button>
+            <button type="button" class="chip @(State.ShowLabels ? "is-on" : null)" @onclick="ToggleLabels">Labels</button>
+        </div>
+    </div>
+
+    <MeshGraphView Snapshot="_mesh" SelectedMac="State.SelectedMac" Route="RouteMacs"
+                   ShowAllLinks="State.ShowAllLinks" ShowLabels="State.ShowLabels" OnSelect="SelectAsync" />
+
+    <div class="topo-legend" aria-label="Legend">
+        <span><i class="lg lg-tree"></i>Spanning tree</span>
+        <span><i class="lg lg-link"></i>Other live link</span>
+        <span><i class="lg lg-route"></i>Traced route</span>
+        <span><i class="lg lg-dead"></i>Link to a down node</span>
+        <span><i class="lg lg-relay"></i>Critical relay</span>
+        <span><i class="lg lg-dot ok"></i>Online</span>
+        <span><i class="lg lg-dot warn"></i>Degraded</span>
+        <span><i class="lg lg-dot bad"></i>Down</span>
+    </div>
+</div>
+
+<div class="stream-grid">
+    <div class="stream-main">
+        @if (_mesh is { } layers)
+        {
+            <div class="card">
+                <div class="card-head">
+                    <h2>Reachability from the gateway</h2>
+                    <span class="hint">Breadth-first search &middot; @Display.Count(layers.Stats.LinksExamined, "link") examined</span>
+                </div>
+                <div class="topo-layers">
+                    @foreach (var ring in layers.Nodes.Where(node => node.Hops is not null).GroupBy(node => node.Hops!.Value).OrderBy(group => group.Key))
+                    {
+                        <div class="topo-layer">
+                            <span class="topo-layer-hops">@(ring.Key == 0 ? "Gateway" : $"{ring.Key} hop{(ring.Key == 1 ? "" : "s")}")</span>
+                            <div class="chips">
+                                @foreach (var node in ring.OrderBy(node => node.Name))
+                                {
+                                    <button type="button" class="chip @(Is(node.Mac) ? "is-on" : null)" @onclick="() => SelectAsync(node.Mac)">@node.Name</button>
+                                }
+                            </div>
+                        </div>
+                    }
+                    @if (layers.Nodes.Any(node => node.Hops is null))
+                    {
+                        <div class="topo-layer">
+                            <span class="topo-layer-hops" style="color:var(--bad)">Unreachable</span>
+                            <div class="chips">
+                                @foreach (var node in layers.Nodes.Where(node => node.Hops is null).OrderBy(node => node.Name))
+                                {
+                                    <button type="button" class="chip" @onclick="() => SelectAsync(node.Mac)">
+                                        @node.Name &middot; @(node.IsStranded ? "stranded" : "down")
+                                    </button>
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+
+    <div class="stream-side">
+        @* ---------------- Selected node and its route ---------------- *@
+        <div class="card">
+            <div class="card-head">
+                <h2>Route trace</h2>
+                @if (_trace is not null)
+                {
+                    <span class="hint">@_trace.Algorithm tree</span>
+                }
+            </div>
+
+            @if (Selected is not { } picked)
+            {
+                <p class="empty">Select a node on the map, or trace one by MAC, to see its route to the gateway.</p>
+            }
+            else
+            {
+                <div class="topo-selected">
+                    <div>
+                        <strong>@picked.Name</strong>
+                        <div class="mono" style="color:var(--text-dim); font-size:0.8rem;">@picked.Mac</div>
+                        <div style="color:var(--text-muted); font-size:0.85rem;">@picked.Location</div>
+                    </div>
+                    <span class="pill @PillClass(picked.Status)"><span class="dot"></span>@StatusLabel(picked.Status)</span>
+                </div>
+
+                @if (!picked.IsGateway)
+                {
+                    <div class="topo-actions">
+                        @if (picked.SimulatedFailure)
+                        {
+                            <button type="button" class="btn btn-sm btn-primary" disabled="@_busy" @onclick="() => SetFailureAsync(picked, false)">Restore node</button>
+                        }
+                        else
+                        {
+                            <button type="button" class="btn btn-sm" disabled="@_busy" @onclick="() => SetFailureAsync(picked, true)"
+                                    title="Take the node down now, without waiting two heartbeats, and recompute every route">Simulate failure</button>
+                        }
+                        <a class="btn btn-sm btn-quiet" href="@($"topology/history?mac={Uri.EscapeDataString(picked.Mac)}")">Telemetry history</a>
+                        @if (picked.SensorId is { } id)
+                        {
+                            <a class="btn btn-sm btn-quiet" href="@($"sensors/{id}")">Sensor page</a>
+                        }
+                    </div>
+                }
+
+                @if (_trace is { } trace)
+                {
+                    @if (trace.IsCriticalRelay)
+                    {
+                        <div class="banner banner-warn" role="status">
+                            <span aria-hidden="true">&#9888;</span>
+                            <span><strong>Critical relay.</strong> This node is an articulation point: if it fails, @Display.Count(trace.Downstream.Count, "node") behind it lose their only route.</span>
+                        </div>
+                    }
+
+                    @if (picked.IsGateway)
+                    {
+                        <p class="empty">This is the gateway: every route ends here.</p>
+                    }
+                    else if (trace.IsDown)
+                    {
+                        <p class="topo-note bad">This node is down, so nothing routes through it.
+                            @if (trace.BaselineNextHop is { } before)
+                            {
+                                <span>Normally it hops via <strong>@before.Name</strong>.</span>
+                            }
+                        </p>
+                    }
+                    else if (!trace.IsReachable)
+                    {
+                        <p class="topo-note bad">
+                            Stranded: up, but with no live route to the gateway.
+                            @if (trace.BlockedBy.Count > 0)
+                            {
+                                <span>Its route is blocked by <strong>@string.Join(", ", trace.BlockedBy.Select(n => n.Name))</strong>.</span>
+                            }
+                        </p>
+                    }
+                    else
+                    {
+                        @if (trace.BaselineNextHop is { } normal && trace.CurrentNextHop is { } now && normal.Mac != now.Mac)
+                        {
+                            <p class="topo-note warn">Rerouted: normally hops via <strong>@normal.Name</strong>, now via <strong>@now.Name</strong>.</p>
+                        }
+
+                        <h3 class="topo-sub">Spanning-tree route &middot; @Display.Count(trace.TreeRoute.Count, "hop") &middot; ETX @trace.TreeCost.ToString("0.00", CultureInfo.InvariantCulture)</h3>
+                        <ol class="topo-hops">
+                            @foreach (var hop in trace.TreeRoute)
+                            {
+                                <li>
+                                    <span>@hop.From.Name <span class="topo-arrow">&rarr;</span> @hop.To.Name</span>
+                                    <span class="mono topo-hop-meta" title="Signal strength, link ETX and running total">
+                                        @hop.RssiDbm.ToString("0", CultureInfo.InvariantCulture) dBm &middot; @hop.Cost.ToString("0.00", CultureInfo.InvariantCulture) &middot; &Sigma; @hop.CumulativeCost.ToString("0.00", CultureInfo.InvariantCulture)
+                                    </span>
+                                </li>
+                            }
+                        </ol>
+
+                        <p class="topo-compare">
+                            Fewest hops (BFS): <strong>@Display.Count(trace.FewestHopsRoute.Count, "hop")</strong>,
+                            ETX @trace.FewestHopsCost.ToString("0.00", CultureInfo.InvariantCulture)
+                            @if (trace.FewestHopsRoute.Count < trace.TreeRoute.Count)
+                            {
+                                <span>&mdash; shorter, but the tree spends less energy across the mesh as a whole, because each node forwards once a round to its parent.</span>
+                            }
+                        </p>
+                    }
+
+                    @if (trace.Downstream.Count > 0)
+                    {
+                        <h3 class="topo-sub">Subnet behind this node (DFS) &middot; @trace.Downstream.Count</h3>
+                        <ul class="topo-downstream">
+                            @foreach (var entry in trace.Downstream)
+                            {
+                                <li style="padding-left:@Display.Css((entry.Depth - 1) * 14)px">
+                                    <button type="button" class="link-button" @onclick="() => SelectAsync(entry.Node.Mac)">@entry.Node.Name</button>
+                                </li>
+                            }
+                        </ul>
+                    }
+                }
+
+                @if (_recent.Count > 0)
+                {
+                    <h3 class="topo-sub">Latest readings</h3>
+                    <div class="table-wrap" style="max-height:220px;">
+                        <table>
+                            <thead><tr><th>Time</th><th class="num">Reading</th></tr></thead>
+                            <tbody>
+                                @foreach (var reading in _recent)
+                                {
+                                    <tr><td class="mono">@Display.Local(reading.TimestampUtc, "HH:mm:ss")</td><td class="num">@reading.Formatted</td></tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            }
+        </div>
+
+        @* ---------------- Self-healing ---------------- *@
+        @if (_mesh is { } healed)
+        {
+            <div class="card">
+                <div class="card-head">
+                    <h2>Self-healing</h2>
+                    <span class="hint">live tree vs every joined node up</span>
+                </div>
+
+                @if (healed.Healing.IsHealthy)
+                {
+                    <p class="topo-note ok">Every node is up and on its normal route.</p>
+                }
+
+                @foreach (var failed in healed.Healing.Failed)
+                {
+                    <div class="topo-heal">
+                        <div>
+                            <button type="button" class="link-button" @onclick="() => SelectAsync(failed.Node.Mac)"><strong>@failed.Node.Name</strong></button>
+                            <span class="pill @PillClass(failed.Reason)"><span class="dot"></span>@StatusLabel(failed.Reason)</span>
+                        </div>
+                        <div class="topo-heal-detail">
+                            @if (failed.Dependents == 0)
+                            {
+                                <span>No node routed through it.</span>
+                            }
+                            else
+                            {
+                                <span>@Display.Count(failed.Dependents, "node") routed through it:
+                                    @failed.Rerouted.Count found another way@(failed.Stranded.Count > 0 ? $", {failed.Stranded.Count} stranded" : ".")</span>
+                            }
+                        </div>
+                    </div>
+                }
+
+                @if (healed.Healing.Reroutes.Count > 0)
+                {
+                    <h3 class="topo-sub">Where traffic hops now</h3>
+                    <ul class="topo-reroutes">
+                        @foreach (var reroute in healed.Healing.Reroutes)
+                        {
+                            <li>
+                                <button type="button" class="link-button" @onclick="() => SelectAsync(reroute.Node.Mac)">@reroute.Node.Name</button>
+                                hops via <strong>@reroute.To.Name</strong> instead of @reroute.From.Name
+                                <span class="mono @(reroute.CostDelta > 0 ? "level-warning" : null)">(@Signed(reroute.CostDelta) ETX)</span>
+                            </li>
+                        }
+                    </ul>
+                    <p class="hint">Detours cost @Signed(healed.Stats.DetourCost) ETX per round across the mesh.</p>
+                }
+
+                @if (healed.Healing.Stranded.Count > 0)
+                {
+                    <h3 class="topo-sub" style="color:var(--bad)">Stranded</h3>
+                    <ul class="topo-reroutes">
+                        @foreach (var stranded in healed.Healing.Stranded)
+                        {
+                            <li>
+                                <button type="button" class="link-button" @onclick="() => SelectAsync(stranded.Node.Mac)">@stranded.Node.Name</button>
+                                has no route home @(stranded.BlockedBy.Count > 0 ? $"while {string.Join(", ", stranded.BlockedBy.Select(n => n.Name))} is down" : "")
+                            </li>
+                        }
+                    </ul>
+                }
+
+                @if (healed.Nodes.Where(n => n.IsCriticalRelay).ToList() is { Count: > 0 } relays)
+                {
+                    <h3 class="topo-sub">Single points of failure</h3>
+                    <p style="color:var(--text-muted); font-size:0.85rem; margin:0;">
+                        @foreach (var relay in relays)
+                        {
+                            <button type="button" class="link-button" @onclick="() => SelectAsync(relay.Mac)">@relay.Name</button>
+                            <span> carries @Display.Count(relay.Downstream, "node"). </span>
+                        }
+                        A second relay in range of the nodes behind each would remove the risk.
+                    </p>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(10);
+
+    private readonly CancellationTokenSource _lifetime = new();
+    private TopologySnapshotResponse? _mesh;
+    private RouteTraceResponse? _trace;
+    private List<HistoryReadingResponse> _recent = [];
+    private string? _search;
+    private bool _busy;
+    private CancellationTokenSource? _debounce;
+
+    /// <summary>Deep link: <c>/topology?mac=A4:CF:12:00:05:B9</c> opens with that node traced.</summary>
+    [SupplyParameterFromQuery(Name = "mac")]
+    public string? Mac { get; set; }
+
+    private IEnumerable<TopologyNodeResponse> Nodes => _mesh?.Nodes.OrderBy(node => node.Name) ?? Enumerable.Empty<TopologyNodeResponse>();
+
+    private TopologyNodeResponse? Selected
+        => _mesh?.Nodes.FirstOrDefault(node => string.Equals(node.Mac, State.SelectedMac, StringComparison.OrdinalIgnoreCase));
+
+    private IReadOnlyList<string> RouteMacs
+        => _trace is { TreeRoute.Count: > 0 } trace
+            ? [trace.TreeRoute[0].From.Mac, .. trace.TreeRoute.Select(hop => hop.To.Mac)]
+            : [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(Mac))
+        {
+            State.SelectedMac = Mac;
+        }
+
+        // Node failures and recoveries reach the console as stream events; those are
+        // the moments the topology changes, so they trigger a reload. A slow poll
+        // covers anything else, such as neighbour reports shifting link weights.
+        Stream.EventsLogged += OnEventsLogged;
+
+        await LoadAsync();
+        _ = PollAsync(_lifetime.Token);
+    }
+
+    /// <summary>
+    /// Blazor reuses this component when only the query string changes - back and
+    /// forward between traced nodes, an edited address, a link to another node - so
+    /// OnInitializedAsync does not run again. Picking the new ?mac= up here keeps the
+    /// trace in step with the address. Selecting on the page sets the state before it
+    /// updates the address, so that path does nothing extra here.
+    /// </summary>
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_mesh is not null
+            && !string.IsNullOrWhiteSpace(Mac)
+            && !string.Equals(Mac, State.SelectedMac, StringComparison.OrdinalIgnoreCase))
+        {
+            State.SelectedMac = Mac;
+            await LoadSelectedAsync();
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        var result = await Api.GetTopologyAsync(State.Algorithm, _lifetime.Token);
+        if (result.Value is { } mesh)
+        {
+            _mesh = mesh;
+        }
+
+        await LoadSelectedAsync();
+    }
+
+    private async Task LoadSelectedAsync()
+    {
+        if (State.SelectedMac is not { } mac)
+        {
+            _trace = null;
+            _recent = [];
+            return;
+        }
+
+        var traceTask = Api.TraceRouteAsync(mac, State.Algorithm, _lifetime.Token);
+        var recentTask = Api.GetRecentReadingsAsync(mac, 12, _lifetime.Token);
+        await Task.WhenAll(traceTask, recentTask);
+
+        _trace = (await traceTask).Value;
+        _recent = (await recentTask).Value ?? [];
+    }
+
+    private async Task PollAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(PollInterval);
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                await LoadAsync();
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Left the page.
+        }
+    }
+
+    private void OnEventsLogged(List<StreamEventResponse> events)
+    {
+        if (!events.Any(entry => entry.Kind is "NodeDown" or "NodeRecovered"))
+        {
+            return;
+        }
+
+        // Several nodes can change in one sweep; wait for the burst to finish.
+        _debounce?.Cancel();
+        _debounce = new CancellationTokenSource();
+        var token = _debounce.Token;
+
+        _ = InvokeAsync(async () =>
+        {
+            try
+            {
+                await Task.Delay(800, token);
+                await LoadAsync();
+                StateHasChanged();
+            }
+            catch (OperationCanceledException)
+            {
+                // Superseded by a later event.
+            }
+        });
+    }
+
+    private async Task SelectAsync(string mac)
+    {
+        State.SelectedMac = mac;
+        Navigation.NavigateTo($"topology?mac={Uri.EscapeDataString(mac)}", replace: true);
+        await LoadSelectedAsync();
+    }
+
+    private async Task SearchAsync()
+    {
+        var query = _search?.Trim();
+        if (string.IsNullOrEmpty(query) || _mesh is null)
+        {
+            return;
+        }
+
+        var match = Display.LooksLikeMacAddress(query)
+            ? _mesh.Nodes.FirstOrDefault(node => Hex(node.Mac) == Hex(query))
+            : _mesh.Nodes.FirstOrDefault(node => node.Name.Contains(query, StringComparison.OrdinalIgnoreCase));
+
+        if (match is null)
+        {
+            Toasts.Error($"No node in the mesh matches \"{query}\".");
+            return;
+        }
+
+        _search = null;
+        await SelectAsync(match.Mac);
+    }
+
+    private async Task SetAlgorithmAsync(string algorithm)
+    {
+        State.Algorithm = algorithm;
+        await LoadAsync();
+    }
+
+    private void ToggleLinks() => State.ShowAllLinks = !State.ShowAllLinks;
+
+    private void ToggleLabels() => State.ShowLabels = !State.ShowLabels;
+
+    private async Task SetFailureAsync(TopologyNodeResponse node, bool failed)
+    {
+        _busy = true;
+
+        try
+        {
+            var result = await Api.SetSimulatedFailureAsync(node.Mac, failed, _lifetime.Token);
+            if (result.Value is { } outcome)
+            {
+                Toasts.Success(outcome.Message);
+                await LoadAsync();
+            }
+            else
+            {
+                Toasts.Error(result.ErrorMessage);
+            }
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private bool Is(string mac) => string.Equals(mac, State.SelectedMac, StringComparison.OrdinalIgnoreCase);
+
+    private static string Hex(string mac)
+        => new(mac.Where(Uri.IsHexDigit).Select(char.ToUpperInvariant).ToArray());
+
+    private static string Micro(double micros)
+        => micros >= 1000 ? $"{micros / 1000:0.0} ms" : $"{micros:0} µs";
+
+    private static string Signed(double value)
+        => (value >= 0 ? "+" : "") + value.ToString("0.00", CultureInfo.InvariantCulture);
+
+    private static string TreeCostNote(TopologyStatsResponse stats)
+        => Math.Abs(stats.TreeCost - stats.BaselineTreeCost) < 0.001
+            ? "the minimum backbone"
+            : $"{stats.BaselineTreeCost.ToString("0.00", CultureInfo.InvariantCulture)} with every joined node up";
+
+    private static string PillClass(string status) => status switch
+    {
+        "Online" or "Gateway" => "pill-online",
+        "Degraded" => "pill-degraded",
+        _ => "pill-silent"
+    };
+
+    private static string StatusLabel(string status) => status switch
+    {
+        "SimulatedFailure" => "Failed (simulated)",
+        _ => status
+    };
+
+    public void Dispose()
+    {
+        _lifetime.Cancel();
+        _debounce?.Cancel();
+        Stream.EventsLogged -= OnEventsLogged;
+    }
+}

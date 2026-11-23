@@ -1,0 +1,5 @@
+2026-09-14 06:00:01 [BOOT] ESP32-S3 rev0.2, firmware 1.4.2
+2026-09-14 06:00:02 [WIFI] ssid=HydroBay3 psk=GreenLeaf!2026 channel=6
+2026-09-14 06:00:03 [MQTT] broker=10.0.4.12:8883 user=node07 pass=mqtt-s3cret
+2026-09-14 06:00:04 [MESH] joined parent A4:CF:12:00:00:00 rssi=-61 dBm
+2026-09-14 06:00:05 [SENS] soil moisture 41.7 %

@@ -1,0 +1,391 @@
+@page "/topology/history"
+@implements IDisposable
+@inject TopologyState State
+@inject SmartXApiClient Api
+@inject NavigationManager Navigation
+
+<PageTitle>Telemetry History &middot; Smart-X Gateway</PageTitle>
+
+<div class="page-head">
+    <h1>Telemetry history</h1>
+    <p>
+        Every reading a node has sent in the last two days, held in a self-balancing
+        <strong>AVL tree</strong> keyed by timestamp. A window such as 14:00&ndash;16:00 is found by
+        walking down the tree to 14:00, not by scanning the history; its count, minimum, maximum
+        and mean come from aggregates stored in the tree's nodes; and any page of the log is
+        reached by rank in O(log n). The badges show how much of the tree each query touched.
+    </p>
+</div>
+
+<div class="card">
+    <div class="card-head">
+        <h2>Window</h2>
+        @if (_bounds is { OldestUtc: { } oldest, NewestUtc: { } newest } bounds)
+        {
+            <span class="hint">
+                @Display.Count(bounds.Count, "reading") held, @Display.Local(oldest, "dd MMM HH:mm") &ndash; @Display.Local(newest, "dd MMM HH:mm")
+                &middot; tree height @bounds.TreeHeight &middot; @Display.Count(bounds.Rotations, "rotation") so far
+            </span>
+        }
+    </div>
+
+    <div class="history-filters">
+        <div class="field" style="flex:1 1 260px;">
+            <label for="node">Node</label>
+            <select id="node" value="@State.SelectedMac" @onchange="SelectNodeAsync">
+                <option value="">Choose a node&hellip;</option>
+                @foreach (var node in _nodes)
+                {
+                    <option value="@node.Mac">@node.Name &middot; @node.Mac</option>
+                }
+            </select>
+        </div>
+
+        <div class="field">
+            <span class="field-label">Range</span>
+            <div class="chips" role="group" aria-label="Time range">
+                @foreach (var (preset, label) in Presets)
+                {
+                    <button type="button" class="chip @(State.Preset == preset ? "is-on" : null)" @onclick="() => SetPresetAsync(preset)">@label</button>
+                }
+            </div>
+        </div>
+    </div>
+
+    @if (State.Preset == HistoryPreset.Custom)
+    {
+        <form class="history-filters" style="margin-top:var(--s3);" @onsubmit="ApplyCustomAsync" @onsubmit:preventDefault>
+            <div class="field">
+                <label for="from">From (local time)</label>
+                <input id="from" type="datetime-local" @bind="State.CustomFromLocal" @bind:format="yyyy-MM-ddTHH:mm" />
+            </div>
+            <div class="field">
+                <label for="to">To (local time)</label>
+                <input id="to" type="datetime-local" @bind="State.CustomToLocal" @bind:format="yyyy-MM-ddTHH:mm" />
+            </div>
+            <div class="field" style="align-self:flex-end;">
+                <button type="submit" class="btn btn-primary">Query</button>
+            </div>
+            <div class="field" style="align-self:flex-end;">
+                <button type="button" class="btn btn-quiet" @onclick="AfternoonAsync" title="The brief's example window, on the newest day held">14:00 &ndash; 16:00</button>
+            </div>
+        </form>
+    }
+</div>
+
+@if (State.SelectedMac is null)
+{
+    <div class="card"><p class="empty">Choose a node to read its history. You can also open a node's history from the mesh map.</p></div>
+}
+else if (_error is not null)
+{
+    <div class="banner banner-bad" role="alert"><span aria-hidden="true">&#9888;</span><span>@_error</span></div>
+}
+else if (_page is { } view)
+{
+    <div class="grid grid-stats" style="margin-top:var(--s4);">
+        <div class="stat">
+            <div class="stat-label">Readings</div>
+            <div class="stat-value">@view.Summary.Count.ToString("N0", CultureInfo.InvariantCulture)</div>
+            <div class="stat-sub">@Display.Local(view.FromUtc, "dd MMM HH:mm") &ndash; @Display.Local(view.ToUtc, "HH:mm")</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Minimum</div>
+            <div class="stat-value">@Num(view.Summary.Minimum)<span class="unit">@view.Unit</span></div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Mean</div>
+            <div class="stat-value">@Num(view.Summary.Mean)<span class="unit">@view.Unit</span></div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Maximum</div>
+            <div class="stat-value">@Num(view.Summary.Maximum)<span class="unit">@view.Unit</span></div>
+        </div>
+    </div>
+
+    <div class="card" style="margin-top:var(--s4);">
+        <div class="card-head">
+            <h2>@view.DisplayName</h2>
+            <span class="hist-cost" title="The summary is read from aggregates stored in each tree node, so it does not visit the readings it summarises">
+                Summary: <strong>@view.SummaryCost.NodesVisited</strong> nodes visited of @view.SummaryCost.TreeSize.ToString("N0", CultureInfo.InvariantCulture)
+                &middot; @Micro(view.SummaryCost.Microseconds)
+            </span>
+        </div>
+
+        <HistoryRangeChart Series="_series" />
+
+        @if (_series is { } series)
+        {
+            <p class="hint" style="margin-top:var(--s2);">
+                @series.Buckets.Count slices of @Duration(series.BucketSeconds), each one O(log n) summary &middot;
+                @series.Cost.NodesVisited.ToString("N0", CultureInfo.InvariantCulture) node visits in total, @Micro(series.Cost.Microseconds)
+            </p>
+        }
+    </div>
+
+    <div class="card" style="margin-top:var(--s4);">
+        <div class="card-head">
+            <h2>Log</h2>
+            <div class="chips" role="group" aria-label="Order">
+                <button type="button" class="chip @(State.NewestFirst ? "is-on" : null)" @onclick="() => SetOrderAsync(true)">Newest first</button>
+                <button type="button" class="chip @(!State.NewestFirst ? "is-on" : null)" @onclick="() => SetOrderAsync(false)">Oldest first</button>
+            </div>
+        </div>
+
+        @if (view.Readings.Count == 0)
+        {
+            <p class="empty">No readings in this window.</p>
+        }
+        else
+        {
+            <div class="table-wrap" style="max-height:520px;">
+                <table>
+                    <thead>
+                        <tr><th>Time</th><th class="num">Reading</th><th class="num">Change</th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in Rows(view))
+                        {
+                            @if (row.HourHeading is { } heading)
+                            {
+                                <tr class="hist-hour"><td colspan="3">@heading</td></tr>
+                            }
+                            <tr>
+                                <td class="mono">@Display.Local(row.Reading.TimestampUtc, "HH:mm:ss")</td>
+                                <td class="num">@row.Reading.Formatted</td>
+                                <td class="num mono @(row.Delta > 0 ? "hist-up" : row.Delta < 0 ? "hist-down" : null)">@DeltaText(row.Delta)</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+
+        <div class="hist-pager">
+            <span class="hist-cost" title="The page's first reading is found by rank, using subtree sizes, so a deep page costs the same as the first">
+                Page @view.Page of @Math.Max(1, view.TotalPages):
+                <strong>@view.PageCost.NodesVisited</strong> nodes visited &mdash; a list scan would read @view.PageCost.LinearScanEquivalent.ToString("N0", CultureInfo.InvariantCulture)
+            </span>
+            <div style="display:flex; gap:var(--s2);">
+                <button type="button" class="btn btn-sm" disabled="@(view.Page <= 1 || _loading)" @onclick="() => GoToAsync(1)">First</button>
+                <button type="button" class="btn btn-sm" disabled="@(view.Page <= 1 || _loading)" @onclick="() => GoToAsync(view.Page - 1)">Previous</button>
+                <button type="button" class="btn btn-sm" disabled="@(view.Page >= view.TotalPages || _loading)" @onclick="() => GoToAsync(view.Page + 1)">Next</button>
+                <button type="button" class="btn btn-sm" disabled="@(view.Page >= view.TotalPages || _loading)" @onclick="() => GoToAsync(view.TotalPages)">Last</button>
+            </div>
+        </div>
+    </div>
+}
+else
+{
+    <div class="card"><p class="loading-line">Querying the tree&hellip;</p></div>
+}
+
+@code {
+    private const int PageSize = 50;
+
+    private static readonly (HistoryPreset, string)[] Presets =
+    [
+        (HistoryPreset.LastHour, "Last hour"),
+        (HistoryPreset.LastTwoHours, "Last 2 hours"),
+        (HistoryPreset.LastSixHours, "Last 6 hours"),
+        (HistoryPreset.LastDay, "Last 24 hours"),
+        (HistoryPreset.Custom, "Custom")
+    ];
+
+    private readonly CancellationTokenSource _lifetime = new();
+    private List<TopologyNodeResponse> _nodes = [];
+    private HistoryBoundsResponse? _bounds;
+    private HistoryPageResponse? _page;
+    private HistorySeriesResponse? _series;
+    private string? _error;
+    private bool _loading;
+    private bool _initialised;
+
+    [SupplyParameterFromQuery(Name = "mac")]
+    public string? Mac { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(Mac) && !string.Equals(Mac, State.SelectedMac, StringComparison.OrdinalIgnoreCase))
+        {
+            State.SelectedMac = Mac;
+            State.Page = 1;
+        }
+
+        var mesh = await Api.GetTopologyAsync(State.Algorithm, _lifetime.Token);
+        _nodes = mesh.Value?.Nodes.Where(node => !node.IsGateway).OrderBy(node => node.Name).ToList() ?? [];
+
+        await LoadAsync();
+        _initialised = true;
+    }
+
+    /// <summary>
+    /// Picks up a ?mac= that changes while the page is open (back and forward, an
+    /// edited address), which Blazor delivers as new parameters, not a new page.
+    /// </summary>
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_initialised
+            && !string.IsNullOrWhiteSpace(Mac)
+            && !string.Equals(Mac, State.SelectedMac, StringComparison.OrdinalIgnoreCase))
+        {
+            State.SelectedMac = Mac;
+            State.Page = 1;
+            _page = null;
+            await LoadAsync();
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        _error = null;
+
+        if (State.SelectedMac is not { } mac)
+        {
+            return;
+        }
+
+        _loading = true;
+
+        try
+        {
+            var bounds = await Api.GetHistoryBoundsAsync(mac, _lifetime.Token);
+            if (bounds.Value is not { } held)
+            {
+                _error = bounds.ErrorMessage;
+                return;
+            }
+
+            _bounds = held;
+            if (held.NewestUtc is not { } newest)
+            {
+                _page = new HistoryPageResponse { DisplayName = held.DisplayName, Unit = held.Unit };
+                _series = null;
+                return;
+            }
+
+            var (from, to) = State.Window(newest);
+            var pageTask = Api.GetHistoryPageAsync(mac, from, to, State.Page, PageSize, State.NewestFirst, _lifetime.Token);
+            var seriesTask = Api.GetHistorySeriesAsync(mac, from, to, 120, _lifetime.Token);
+            await Task.WhenAll(pageTask, seriesTask);
+
+            var view = await pageTask;
+            _page = view.Value;
+            _series = (await seriesTask).Value;
+            _error = view.Succeeded ? null : view.ErrorMessage;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task SelectNodeAsync(ChangeEventArgs e)
+    {
+        var mac = e.Value?.ToString();
+        State.SelectedMac = string.IsNullOrWhiteSpace(mac) ? null : mac;
+        State.Page = 1;
+        _page = null;
+
+        if (State.SelectedMac is { } selected)
+        {
+            Navigation.NavigateTo($"topology/history?mac={Uri.EscapeDataString(selected)}", replace: true);
+        }
+
+        await LoadAsync();
+    }
+
+    private async Task SetPresetAsync(HistoryPreset preset)
+    {
+        State.Preset = preset;
+        State.Page = 1;
+
+        if (preset == HistoryPreset.Custom && (State.CustomFromLocal is null || State.CustomToLocal is null) && _bounds?.NewestUtc is { } newest)
+        {
+            // Start from the last two hours so the inputs are never blank.
+            var end = newest.ToLocalTime().DateTime;
+            State.CustomToLocal = Minute(end.AddMinutes(1));
+            State.CustomFromLocal = Minute(end.AddHours(-2));
+        }
+
+        await LoadAsync();
+    }
+
+    private async Task ApplyCustomAsync()
+    {
+        State.Page = 1;
+        await LoadAsync();
+    }
+
+    /// <summary>The brief's own example: 14:00 to 16:00, on the newest day the tree holds afternoon data for.</summary>
+    private async Task AfternoonAsync()
+    {
+        if (_bounds?.NewestUtc is not { } newest)
+        {
+            return;
+        }
+
+        var day = newest.ToLocalTime().Date;
+        if (newest.ToLocalTime().DateTime < day.AddHours(16))
+        {
+            day = day.AddDays(-1);
+        }
+
+        State.CustomFromLocal = day.AddHours(14);
+        State.CustomToLocal = day.AddHours(16);
+        await ApplyCustomAsync();
+    }
+
+    private async Task SetOrderAsync(bool newestFirst)
+    {
+        State.NewestFirst = newestFirst;
+        State.Page = 1;
+        await LoadAsync();
+    }
+
+    private async Task GoToAsync(int page)
+    {
+        State.Page = Math.Max(1, page);
+        await LoadAsync();
+    }
+
+    /// <summary>The page's readings with an hour heading wherever the hour changes, and each reading's change from the one before it in time.</summary>
+    private static IEnumerable<(string? HourHeading, HistoryReadingResponse Reading, double? Delta)> Rows(HistoryPageResponse view)
+    {
+        string? lastHour = null;
+
+        for (var i = 0; i < view.Readings.Count; i++)
+        {
+            var reading = view.Readings[i];
+            var hour = Display.Local(reading.TimestampUtc, "ddd dd MMM, HH:00");
+
+            // "Before it in time" is the next row when the log runs newest first.
+            var earlierIndex = view.NewestFirst ? i + 1 : i - 1;
+            double? delta = earlierIndex >= 0 && earlierIndex < view.Readings.Count
+                ? reading.Value - view.Readings[earlierIndex].Value
+                : null;
+
+            yield return (hour == lastHour ? null : hour, reading, delta);
+            lastHour = hour;
+        }
+    }
+
+    private static string DeltaText(double? delta) => delta switch
+    {
+        null => "",
+        0 => "0",
+        > 0 => "+" + delta.Value.ToString("0.##", CultureInfo.InvariantCulture),
+        _ => delta.Value.ToString("0.##", CultureInfo.InvariantCulture)
+    };
+
+    private static string Num(double value) => value.ToString(Math.Abs(value) >= 100 ? "0" : "0.0", CultureInfo.InvariantCulture);
+
+    private static string Micro(double micros) => micros >= 1000 ? $"{micros / 1000:0.0} ms" : $"{micros:0} µs";
+
+    private static string Duration(double seconds)
+        => seconds >= 3600 ? $"{seconds / 3600:0.#} h" : seconds >= 60 ? $"{seconds / 60:0.#} min" : $"{seconds:0} s";
+
+    private static DateTime Minute(DateTime value) => new(value.Year, value.Month, value.Day, value.Hour, value.Minute, 0);
+
+    public void Dispose() => _lifetime.Cancel();
+}

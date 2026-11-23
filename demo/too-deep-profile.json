@@ -1,0 +1,303 @@
+{
+  "root": {
+    "id": "facility-a",
+    "name": "Facility A",
+    "kind": "Facility",
+    "children": [
+      {
+        "id": "zone-1",
+        "name": "Zone 1",
+        "kind": "Zone",
+        "children": [
+          {
+            "id": "bay-1",
+            "name": "Bay 1",
+            "kind": "SubZone",
+            "children": [
+              {
+                "id": "bay-2",
+                "name": "Bay 2",
+                "kind": "SubZone",
+                "children": [
+                  {
+                    "id": "bay-3",
+                    "name": "Bay 3",
+                    "kind": "SubZone",
+                    "children": [
+                      {
+                        "id": "bay-4",
+                        "name": "Bay 4",
+                        "kind": "SubZone",
+                        "children": [
+                          {
+                            "id": "bay-5",
+                            "name": "Bay 5",
+                            "kind": "SubZone",
+                            "children": [
+                              {
+                                "id": "bay-6",
+                                "name": "Bay 6",
+                                "kind": "SubZone",
+                                "children": [
+                                  {
+                                    "id": "bay-7",
+                                    "name": "Bay 7",
+                                    "kind": "SubZone",
+                                    "children": [
+                                      {
+                                        "id": "bay-8",
+                                        "name": "Bay 8",
+                                        "kind": "SubZone",
+                                        "children": [
+                                          {
+                                            "id": "bay-9",
+                                            "name": "Bay 9",
+                                            "kind": "SubZone",
+                                            "children": [
+                                              {
+                                                "id": "bay-10",
+                                                "name": "Bay 10",
+                                                "kind": "SubZone",
+                                                "children": [
+                                                  {
+                                                    "id": "bay-11",
+                                                    "name": "Bay 11",
+                                                    "kind": "SubZone",
+                                                    "children": [
+                                                      {
+                                                        "id": "bay-12",
+                                                        "name": "Bay 12",
+                                                        "kind": "SubZone",
+                                                        "children": [
+                                                          {
+                                                            "id": "bay-13",
+                                                            "name": "Bay 13",
+                                                            "kind": "SubZone",
+                                                            "children": [
+                                                              {
+                                                                "id": "bay-14",
+                                                                "name": "Bay 14",
+                                                                "kind": "SubZone",
+                                                                "children": [
+                                                                  {
+                                                                    "id": "bay-15",
+                                                                    "name": "Bay 15",
+                                                                    "kind": "SubZone",
+                                                                    "children": [
+                                                                      {
+                                                                        "id": "bay-16",
+                                                                        "name": "Bay 16",
+                                                                        "kind": "SubZone",
+                                                                        "children": [
+                                                                          {
+                                                                            "id": "bay-17",
+                                                                            "name": "Bay 17",
+                                                                            "kind": "SubZone",
+                                                                            "children": [
+                                                                              {
+                                                                                "id": "bay-18",
+                                                                                "name": "Bay 18",
+                                                                                "kind": "SubZone",
+                                                                                "children": [
+                                                                                  {
+                                                                                    "id": "bay-19",
+                                                                                    "name": "Bay 19",
+                                                                                    "kind": "SubZone",
+                                                                                    "children": [
+                                                                                      {
+                                                                                        "id": "bay-20",
+                                                                                        "name": "Bay 20",
+                                                                                        "kind": "SubZone",
+                                                                                        "children": [
+                                                                                          {
+                                                                                            "id": "bay-21",
+                                                                                            "name": "Bay 21",
+                                                                                            "kind": "SubZone",
+                                                                                            "children": [
+                                                                                              {
+                                                                                                "id": "bay-22",
+                                                                                                "name": "Bay 22",
+                                                                                                "kind": "SubZone",
+                                                                                                "children": [
+                                                                                                  {
+                                                                                                    "id": "bay-23",
+                                                                                                    "name": "Bay 23",
+                                                                                                    "kind": "SubZone",
+                                                                                                    "children": [
+                                                                                                      {
+                                                                                                        "id": "bay-24",
+                                                                                                        "name": "Bay 24",
+                                                                                                        "kind": "SubZone",
+                                                                                                        "children": [
+                                                                                                          {
+                                                                                                            "id": "bay-25",
+                                                                                                            "name": "Bay 25",
+                                                                                                            "kind": "SubZone",
+                                                                                                            "children": [
+                                                                                                              {
+                                                                                                                "id": "bay-26",
+                                                                                                                "name": "Bay 26",
+                                                                                                                "kind": "SubZone",
+                                                                                                                "children": [
+                                                                                                                  {
+                                                                                                                    "id": "bay-27",
+                                                                                                                    "name": "Bay 27",
+                                                                                                                    "kind": "SubZone",
+                                                                                                                    "children": [
+                                                                                                                      {
+                                                                                                                        "id": "bay-28",
+                                                                                                                        "name": "Bay 28",
+                                                                                                                        "kind": "SubZone",
+                                                                                                                        "children": [
+                                                                                                                          {
+                                                                                                                            "id": "bay-29",
+                                                                                                                            "name": "Bay 29",
+                                                                                                                            "kind": "SubZone",
+                                                                                                                            "children": [
+                                                                                                                              {
+                                                                                                                                "id": "bay-30",
+                                                                                                                                "name": "Bay 30",
+                                                                                                                                "kind": "SubZone",
+                                                                                                                                "children": [
+                                                                                                                                  {
+                                                                                                                                    "id": "bay-31",
+                                                                                                                                    "name": "Bay 31",
+                                                                                                                                    "kind": "SubZone",
+                                                                                                                                    "children": [
+                                                                                                                                      {
+                                                                                                                                        "id": "bay-32",
+                                                                                                                                        "name": "Bay 32",
+                                                                                                                                        "kind": "SubZone",
+                                                                                                                                        "children": [
+                                                                                                                                          {
+                                                                                                                                            "id": "bay-33",
+                                                                                                                                            "name": "Bay 33",
+                                                                                                                                            "kind": "SubZone",
+                                                                                                                                            "children": [
+                                                                                                                                              {
+                                                                                                                                                "id": "bay-34",
+                                                                                                                                                "name": "Bay 34",
+                                                                                                                                                "kind": "SubZone",
+                                                                                                                                                "children": [
+                                                                                                                                                  {
+                                                                                                                                                    "id": "bay-35",
+                                                                                                                                                    "name": "Bay 35",
+                                                                                                                                                    "kind": "SubZone",
+                                                                                                                                                    "children": [
+                                                                                                                                                      {
+                                                                                                                                                        "id": "bay-36",
+                                                                                                                                                        "name": "Bay 36",
+                                                                                                                                                        "kind": "SubZone",
+                                                                                                                                                        "children": [
+                                                                                                                                                          {
+                                                                                                                                                            "id": "bay-37",
+                                                                                                                                                            "name": "Bay 37",
+                                                                                                                                                            "kind": "SubZone",
+                                                                                                                                                            "children": [
+                                                                                                                                                              {
+                                                                                                                                                                "id": "bay-38",
+                                                                                                                                                                "name": "Bay 38",
+                                                                                                                                                                "kind": "SubZone",
+                                                                                                                                                                "children": [
+                                                                                                                                                                  {
+                                                                                                                                                                    "id": "bay-39",
+                                                                                                                                                                    "name": "Bay 39",
+                                                                                                                                                                    "kind": "SubZone",
+                                                                                                                                                                    "children": [
+                                                                                                                                                                      {
+                                                                                                                                                                        "id": "bay-40",
+                                                                                                                                                                        "name": "Bay 40",
+                                                                                                                                                                        "kind": "SubZone",
+                                                                                                                                                                        "children": [
+                                                                                                                                                                          {
+                                                                                                                                                                            "id": "node-deep",
+                                                                                                                                                                            "name": "NODE-DEEP",
+                                                                                                                                                                            "kind": "Device",
+                                                                                                                                                                            "macAddress": "A4:CF:12:00:00:00",
+                                                                                                                                                                            "children": []
+                                                                                                                                                                          }
+                                                                                                                                                                        ]
+                                                                                                                                                                      }
+                                                                                                                                                                    ]
+                                                                                                                                                                  }
+                                                                                                                                                                ]
+                                                                                                                                                              }
+                                                                                                                                                            ]
+                                                                                                                                                          }
+                                                                                                                                                        ]
+                                                                                                                                                      }
+                                                                                                                                                    ]
+                                                                                                                                                  }
+                                                                                                                                                ]
+                                                                                                                                              }
+                                                                                                                                            ]
+                                                                                                                                          }
+                                                                                                                                        ]
+                                                                                                                                      }
+                                                                                                                                    ]
+                                                                                                                                  }
+                                                                                                                                ]
+                                                                                                                              }
+                                                                                                                            ]
+                                                                                                                          }
+                                                                                                                        ]
+                                                                                                                      }
+                                                                                                                    ]
+                                                                                                                  }
+                                                                                                                ]
+                                                                                                              }
+                                                                                                            ]
+                                                                                                          }
+                                                                                                        ]
+                                                                                                      }
+                                                                                                    ]
+                                                                                                  }
+                                                                                                ]
+                                                                                              }
+                                                                                            ]
+                                                                                          }
+                                                                                        ]
+                                                                                      }
+                                                                                    ]
+                                                                                  }
+                                                                                ]
+                                                                              }
+                                                                            ]
+                                                                          }
+                                                                        ]
+                                                                      }
+                                                                    ]
+                                                                  }
+                                                                ]
+                                                              }
+                                                            ]
+                                                          }
+                                                        ]
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

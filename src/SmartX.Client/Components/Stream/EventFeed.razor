@@ -1,0 +1,30 @@
+@* The newest history entries, as they are pushed. Colour follows level only -
+   red is always critical, never decoration. *@
+
+@if (Events.Count == 0)
+{
+    <p class="loading-line">Quiet. Alerts, outages and commands appear here as they happen.</p>
+}
+else
+{
+    <ol class="feed" aria-live="polite" aria-relevant="additions">
+        @foreach (var entry in Events.Take(Take))
+        {
+            <li @key="entry.Sequence" class="feed-item feed-@entry.Level.ToLowerInvariant()">
+                <span class="feed-time mono">@Display.Local(entry.TimestampUtc, "HH:mm:ss")</span>
+                <span class="feed-body">
+                    <strong>@entry.Title</strong>
+                    <span class="feed-detail">@entry.Detail</span>
+                </span>
+            </li>
+        }
+    </ol>
+}
+
+@code {
+    /// <summary>History, newest first.</summary>
+    [Parameter, EditorRequired] public IReadOnlyList<StreamEventResponse> Events { get; set; } = [];
+
+    /// <summary>How many to show.</summary>
+    [Parameter] public int Take { get; set; } = 12;
+}

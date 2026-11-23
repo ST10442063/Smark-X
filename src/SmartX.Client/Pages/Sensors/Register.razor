@@ -1,0 +1,262 @@
+@page "/sensors/register"
+@inject SmartXApiClient Api
+@inject NavigationManager Navigation
+@inject ToastService Toasts
+
+<PageTitle>Register a node &middot; Smart-X Gateway</PageTitle>
+
+<div class="page-head">
+    <h1>Register a mesh node</h1>
+    <p>
+        The gateway normalises the MAC address on arrival, so a node registered as
+        <code>a4cf.129b.0e77</code> and one registered as <code>A4-CF-12-9B-0E-77</code>
+        are correctly recognised as the same device.
+    </p>
+</div>
+
+<div class="grid grid-2">
+    <div class="card">
+        @* The model is the API request DTO itself, so DataAnnotationsValidator runs
+           the very same attributes in the browser that the gateway enforces on
+           arrival. The two validations cannot disagree, because there is only one set. *@
+        <EditForm EditContext="_editContext" OnValidSubmit="SubmitAsync" FormName="register-sensor">
+            <DataAnnotationsValidator />
+
+            @if (_formError is { Length: > 0 })
+            {
+                <div class="validation-summary-errors" role="alert" style="margin-bottom:var(--s4);">@_formError</div>
+            }
+
+            <h2>Identity</h2>
+
+            <div class="field">
+                <label for="mac">MAC address</label>
+                <InputText id="mac" @bind-Value="_request.MacAddress" placeholder="A4:CF:12:9B:0E:77" autocomplete="off" />
+                <ValidationMessage For="() => _request.MacAddress" />
+                <span class="help">Colons, hyphens, dots or bare hex are all accepted.</span>
+            </div>
+
+            <div class="field">
+                <label for="displayName">Display name</label>
+                <InputText id="displayName" @bind-Value="_request.DisplayName" placeholder="Hydro Bay 3 — Moisture" />
+                <ValidationMessage For="() => _request.DisplayName" />
+                <span class="help">The label operators will see on the radar.</span>
+            </div>
+
+            <div class="form-row">
+                <div class="field">
+                    <label for="category">Category</label>
+                    <InputSelect id="category" Value="_request.Category" ValueExpression="() => _request.Category"
+                                 ValueChanged="(string value) => OnCategoryChanged(value)">
+                        @foreach (var category in SensorVocabulary.Categories)
+                        {
+                            <option value="@category">@SensorVocabulary.DisplayName(category)</option>
+                        }
+                    </InputSelect>
+                    <ValidationMessage For="() => _request.Category" />
+                </div>
+
+                <div class="field">
+                    <label for="unit">Unit</label>
+                    <InputSelect id="unit" Value="_request.Unit" ValueExpression="() => _request.Unit"
+                                 ValueChanged="(string value) => OnUnitChanged(value)">
+                        @foreach (var unit in SensorVocabulary.Units)
+                        {
+                            <option value="@unit">@unit</option>
+                        }
+                    </InputSelect>
+                    <ValidationMessage For="() => _request.Unit" />
+                    <span class="help">Pre-filled from the category; change it if the node differs.</span>
+                </div>
+            </div>
+
+            <h2 style="margin-top:var(--s5);">Deployment location</h2>
+
+            <div class="form-row">
+                <div class="field">
+                    <label for="facility">Facility</label>
+                    <InputText id="facility" @bind-Value="_request.Facility" placeholder="Facility A" />
+                    <ValidationMessage For="() => _request.Facility" />
+                </div>
+
+                <div class="field">
+                    <label for="zone">Zone</label>
+                    <InputText id="zone" @bind-Value="_request.Zone" placeholder="Zone 1" />
+                    <ValidationMessage For="() => _request.Zone" />
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="field">
+                    <label for="subZone">Sub-zone</label>
+                    <InputText id="subZone" @bind-Value="_request.SubZone" placeholder="Sub-Zone B" />
+                    <ValidationMessage For="() => _request.SubZone" />
+                    <span class="help">Optional — leave blank for a zone-level node.</span>
+                </div>
+
+                <div class="field">
+                    <label for="nodeId">Node ID</label>
+                    <InputText id="nodeId" @bind-Value="_request.NodeId" placeholder="NODE-07" />
+                    <ValidationMessage For="() => _request.NodeId" />
+                </div>
+            </div>
+
+            <h2 style="margin-top:var(--s5);">Firmware and heartbeat</h2>
+
+            <div class="form-row">
+                <div class="field">
+                    <label for="firmware">Firmware version</label>
+                    <InputText id="firmware" @bind-Value="_request.FirmwareVersion" placeholder="1.4.2" />
+                    <ValidationMessage For="() => _request.FirmwareVersion" />
+                </div>
+
+                <div class="field">
+                    <label for="heartbeat">Heartbeat interval (seconds)</label>
+                    <InputNumber id="heartbeat" @bind-Value="_request.HeartbeatIntervalSeconds" min="1" max="3600" />
+                    <ValidationMessage For="() => _request.HeartbeatIntervalSeconds" />
+                    <span class="help">Two missed intervals marks the node silent.</span>
+                </div>
+            </div>
+
+            <div style="display:flex; gap:var(--s3); margin-top:var(--s5);">
+                <button type="submit" class="btn btn-primary" disabled="@_submitting">
+                    @(_submitting ? "Registering…" : "Register node")
+                </button>
+                <a class="btn btn-quiet" href="sensors">Cancel</a>
+            </div>
+        </EditForm>
+    </div>
+
+    <div class="card" style="align-self:start;">
+        <div class="card-head">
+            <h2>What happens on submit</h2>
+        </div>
+
+        <ol style="color:var(--text-muted); font-size:0.9rem; padding-left:var(--s5); margin:0;">
+            <li style="margin-bottom:var(--s3);">
+                These rules run in the browser first, as C# on WebAssembly, from the same
+                annotations the gateway enforces. Nothing is sent while a field is invalid.
+            </li>
+            <li style="margin-bottom:var(--s3);">
+                The request goes straight to <code>POST /api/sensors</code> over an awaited
+                HTTP call, so the page stays responsive while it waits.
+            </li>
+            <li style="margin-bottom:var(--s3);">
+                The gateway re-validates, normalises the MAC address, and binary-searches the
+                sorted registry for the insertion point.
+            </li>
+            <li style="margin-bottom:var(--s3);">
+                A duplicate address comes back as <code>409 Conflict</code> and is shown
+                against the MAC field rather than in a generic error box.
+            </li>
+            <li>
+                On success the node gets its own ring buffer and jagged history store, and
+                the gateway returns <code>201 Created</code>.
+            </li>
+        </ol>
+    </div>
+</div>
+
+@code {
+    private readonly RegisterSensorRequest _request = new();
+    private EditContext _editContext = default!;
+    private ValidationMessageStore _serverErrors = default!;
+    private bool _unitTouched;
+    private bool _submitting;
+    private string? _formError;
+
+    protected override void OnInitialized()
+    {
+        _editContext = new EditContext(_request);
+        _serverErrors = new ValidationMessageStore(_editContext);
+
+        // A message the gateway returned belongs to the value that was submitted.
+        // Once the operator edits that field, the message is stale, so it goes.
+        _editContext.OnFieldChanged += (_, args) =>
+        {
+            _serverErrors.Clear(args.FieldIdentifier);
+            _formError = null;
+        };
+    }
+
+    private void OnCategoryChanged(string category)
+    {
+        _request.Category = category;
+        _editContext.NotifyFieldChanged(_editContext.Field(nameof(RegisterSensorRequest.Category)));
+
+        // The pairing is almost always the same, but the unit stays editable, and
+        // once the operator has chosen one it is never overwritten behind their back.
+        if (!_unitTouched)
+        {
+            _request.Unit = SensorVocabulary.DefaultUnitFor(category);
+        }
+    }
+
+    private void OnUnitChanged(string unit)
+    {
+        _unitTouched = true;
+        _request.Unit = unit;
+        _editContext.NotifyFieldChanged(_editContext.Field(nameof(RegisterSensorRequest.Unit)));
+    }
+
+    private async Task SubmitAsync()
+    {
+        _submitting = true;
+        _serverErrors.Clear();
+        _formError = null;
+
+        var result = await Api.RegisterSensorAsync(_request);
+        _submitting = false;
+
+        if (result.Succeeded)
+        {
+            Toasts.Success($"Registered {result.Value!.DisplayName} at {result.Value.QualifiedPath}.");
+            Navigation.NavigateTo($"sensors/{result.Value.Id}");
+            return;
+        }
+
+        foreach (var (key, messages) in result.FieldErrors)
+        {
+            var property = ResolveProperty(key);
+
+            if (property is null)
+            {
+                _formError = string.Join(" ", messages);
+                continue;
+            }
+
+            _serverErrors.Add(_editContext.Field(property), messages);
+        }
+
+        if (result.FieldErrors.Count == 0)
+        {
+            if (result.StatusCode == 409)
+            {
+                // A conflict has no field dictionary, but it is always about the MAC,
+                // so it belongs on that input rather than floating above the form.
+                _serverErrors.Add(_editContext.Field(nameof(RegisterSensorRequest.MacAddress)), result.ErrorMessage);
+            }
+            else
+            {
+                _formError = result.ErrorMessage;
+            }
+        }
+
+        _editContext.NotifyValidationStateChanged();
+    }
+
+    /// <summary>
+    /// Maps a key from the gateway's error dictionary onto a property of the form
+    /// model. Model-binding keys arrive as "MacAddress"; JSON reader errors arrive
+    /// as "$.macAddress". Both should land on the same input.
+    /// </summary>
+    private static string? ResolveProperty(string key)
+    {
+        var name = key.StartsWith("$.", StringComparison.Ordinal) ? key[2..] : key;
+
+        return typeof(RegisterSensorRequest)
+            .GetProperties()
+            .FirstOrDefault(property => property.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+            ?.Name;
+    }
+}
